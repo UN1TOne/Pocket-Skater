@@ -68,10 +68,18 @@ export class Park {
     }
     const pos = gridToWorld(placed.itemId, placed.x, placed.z, placed.rot, this.gridSize);
     // Exterior pieces live purely as decoration. Their bases sit at Y=0 by design, which
-    // puts them in the same plane as the slab (Y=0.002) and the apron, so a flat patch
-    // or a tree base z-fights with the ground. Lift them a hair above the slab so the
-    // depth test picks the piece's own geometry first.
-    if (def.category === "exteriors") pos.y = 0.02;
+    // puts them in the same plane as the slab (Y=0.002), the apron (Y=0), and the curb top
+    // (Y=0.12). Flat patches (patch-dirt/patch-grass have 1×1 flat bottoms at local Y=0)
+    // z-fight with the apron, and the iso camera + SSAO + ink-outline (depthThreshold=0.014)
+    // amplify tiny depth gaps into visible stippled noise. Lift keeps geometry buffers
+    // honest; zOffset covers the main pass + handles any residual coplanar overlap with
+    // the curb or neighbouring exteriors.
+    if (def.category === "exteriors") {
+      pos.y = 0.04;
+      for (const m of inst.meshes) {
+        if (m.material) m.material.zOffset = -1;
+      }
+    }
     // Stacking: pieces placed on top of a stackable base carry an additional world-Y offset.
     if (placed.y) pos.y += placed.y;
     inst.root.position = pos;
@@ -107,7 +115,7 @@ export class Park {
       if (samePlacement(existing.placed, item)) continue;
       const def = CATALOG_BY_ID[item.itemId];
       const pos = gridToWorld(item.itemId, item.x, item.z, item.rot, this.gridSize);
-      if (def?.category === "exteriors") pos.y = 0.02;
+      if (def?.category === "exteriors") pos.y = 0.04;
       if (item.y) pos.y += item.y;
       existing.instance.root.position = pos;
       existing.instance.root.rotation.y = rotationY(item.rot);
