@@ -62,23 +62,26 @@ export class MapThumbnailService {
     let park: Park | null = null;
     try {
       // Fresh world per render so shadow extents, pipeline and background all size to the map.
+      // visibleUnits sized to include the outer-ring decoration (map + ~2 cells of margin on
+      // each side) so trees/rocks/etc. placed on outerItems actually show up in the thumbnail.
+      // Too much margin shrinks the skate park too hard; this balance keeps both legible.
+      const framedUnits = map.size + 5;
       world = createWorld(this.engine, {
         gridSize: map.size,
         showGridLines: false,
         orbitControls: false,
         quality: "high",
-        visibleUnits: map.size,
+        visibleUnits: framedUnits,
       });
 
       park = new Park(world, map.size);
       await park.build(map);
 
-      // Iso top-down framing covering the whole park. The createWorld camera already uses
-      // the ISO_ALPHA/BETA angles; we just stretch the radius so every piece fits.
+      // The camera is already radius'd by createWorld via fitRadius(visibleUnits). We only
+      // need to lock the iso angles here (not stretch radius further).
       const cam = world.camera;
       cam.alpha = -Math.PI / 4;
       cam.beta = 0.9;
-      cam.radius = map.size * 1.9;
       cam.target.set(0, 0, 0);
 
       // Two renders: first primes shaders + shadow map, second captures.

@@ -95,7 +95,9 @@ export class SkateScene {
     const rawPieces: RawPiece[] = [];
     for (const piece of this.park.pieces.values()) {
       const def = CATALOG_BY_ID[piece.placed.itemId];
-      if (!def || def.category === "floors") continue;
+      // Floors have no collider (walked-on only); exteriors are pure decoration (trees, rocks,
+      // grass) outside the skate zone and never get a physics body.
+      if (!def || def.category === "floors" || def.category === "exteriors") continue;
       let maxY = 0;
       for (const m of piece.instance.meshes) {
         if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;

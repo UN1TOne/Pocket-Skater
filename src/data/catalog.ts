@@ -50,6 +50,30 @@ export const CATALOG: CatalogItem[] = [
   // Floors
   { id: "floor-concrete", label: "Concrete", category: "floors", footprint: { w: 1, d: 1 }, tags: ["floor"] },
   { id: "floor-wood", label: "Wood Floor", category: "floors", footprint: { w: 1, d: 1 }, tags: ["floor"] },
+
+  // Exteriors — Kenney nature pack. IDs are prefixed with `exterior-` so they can't collide
+  // with the skate catalog (e.g. the park has its own `fence`). modelUrl() strips the prefix
+  // and loads from /assets/models/exteriors/<name>.glb. These never get physics bodies in
+  // the skate scene — they live purely for visual framing in the outer ring.
+  { id: "exterior-tree", label: "Tree", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-tree-high", label: "Tall Tree", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-plant", label: "Shrub", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-rocks-high", label: "Rocks (Tall)", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-rocks-low", label: "Rocks (Low)", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-rocks-ramp", label: "Rock Ramp", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-stones", label: "Stones", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-patch-grass", label: "Grass Patch", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-patch-dirt", label: "Dirt Patch", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-fence", label: "Wood Fence", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-bridge", label: "Bridge", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-platform", label: "Platform", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-ladder", label: "Ladder", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-flag", label: "Flag", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-tent", label: "Tent", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-target", label: "Target", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-building-platform", label: "Lookout Deck", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-building-roof", label: "Lookout Roof", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-building-structure", label: "Lookout Posts", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
 ];
 
 export const CATALOG_BY_ID: Record<string, CatalogItem> = Object.fromEntries(CATALOG.map((c) => [c.id, c]));
@@ -61,8 +85,22 @@ export const CATEGORIES: Array<{ id: ItemCategory; label: string; emoji: string 
   { id: "obstacles", label: "Ledges", emoji: "🧱" },
   { id: "props", label: "Props", emoji: "🪑" },
   { id: "floors", label: "Floors", emoji: "⬜" },
+  { id: "exteriors", label: "Nature", emoji: "🌲" },
 ];
 
 export const previewUrl = (id: string) => `/assets/images/preview/${id}.png`;
-export const modelUrl = (id: string) => `/assets/models/${id}.glb`;
+// TODO(rename): the folder on disk is currently `Exteriors` (capital E) because Vite's dev
+// watcher is holding a lock. Once dev is restarted the folder can be renamed to lowercase
+// `exteriors` and this constant can be dropped. The modelUrl() uses this directly so there's
+// a single place to flip when the rename happens.
+const EXTERIORS_DIR = "Exteriors";
+export const modelUrl = (id: string): string => {
+  const item = CATALOG_BY_ID[id];
+  if (item?.category === "exteriors") {
+    // Strip the `exterior-` prefix so the file lookup matches the GLB name on disk.
+    const file = id.startsWith("exterior-") ? id.slice("exterior-".length) : id;
+    return `/assets/models/${EXTERIORS_DIR}/${file}.glb`;
+  }
+  return `/assets/models/${id}.glb`;
+};
 export const bgUrl = (name: "landing" | "sky" | "dusk") => `/assets/images/bg/${name}.png`;

@@ -52,8 +52,9 @@ export class Park {
   }
 
   async build(map: MapData) {
-    await this.loader.preload([...new Set(map.items.map((i) => i.itemId))]);
-    await Promise.all(map.items.map((it) => this.add(it)));
+    const all = [...map.items, ...(map.outerItems ?? [])];
+    await this.loader.preload([...new Set(all.map((i) => i.itemId))]);
+    await Promise.all(all.map((it) => this.add(it)));
   }
 
   async add(placed: PlacedItem): Promise<ParkPiece | null> {
@@ -82,10 +83,11 @@ export class Park {
   }
 
   /** Diff-sync against a new item list; also updates in-place rotation/position for same-uid pieces. */
-  async sync(items: PlacedItem[]) {
-    const wanted = new Map(items.map((i) => [i.uid, i]));
+  async sync(items: PlacedItem[], outerItems: PlacedItem[] = []) {
+    const combined = [...items, ...outerItems];
+    const wanted = new Map(combined.map((i) => [i.uid, i]));
     for (const uid of [...this.pieces.keys()]) if (!wanted.has(uid)) this.remove(uid);
-    for (const item of items) {
+    for (const item of combined) {
       const existing = this.pieces.get(item.uid);
       if (!existing) continue;
       if (samePlacement(existing.placed, item)) continue;
@@ -93,7 +95,7 @@ export class Park {
       existing.instance.root.rotation.y = rotationY(item.rot);
       existing.placed = item;
     }
-    const toAdd = items.filter((i) => !this.pieces.has(i.uid));
+    const toAdd = combined.filter((i) => !this.pieces.has(i.uid));
     await Promise.all(toAdd.map((i) => this.add(i)));
   }
 

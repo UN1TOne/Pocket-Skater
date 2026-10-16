@@ -76,9 +76,9 @@ export class BuilderScene {
 
     this.unsub.push(
       useGameStore.subscribe((s, prev) => {
-        if (s.customMap.items !== prev.customMap.items) {
+        if (s.customMap.items !== prev.customMap.items || s.customMap.outerItems !== prev.customMap.outerItems) {
           this.emitPuffsForNewItems(s.customMap.items, map.size);
-          void this.park.sync(s.customMap.items).then(() => {
+          void this.park.sync(s.customMap.items, s.customMap.outerItems ?? []).then(() => {
             this.applyMovingVisibility(s.movingPieceUid);
             this.applyDialHighlight(s.activeDial?.uid ?? null);
             if (s.activeDial) this.repositionDialFor(s.activeDial.uid);

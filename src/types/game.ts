@@ -4,7 +4,7 @@ export type CharacterId = "character-skate-boy" | "character-skate-girl";
 export type RideId = "skateboard" | "scooter";
 export type PlayMode = "manual" | "ai";
 
-export type ItemCategory = "ramps" | "rails" | "bowls" | "obstacles" | "props" | "floors";
+export type ItemCategory = "ramps" | "rails" | "bowls" | "obstacles" | "props" | "floors" | "exteriors";
 
 /** One entry of the item catalog (maps 1:1 to a GLB in /assets/models). */
 export interface CatalogItem {
@@ -14,7 +14,7 @@ export interface CatalogItem {
   /** Footprint in grid cells (x = width, z = depth) at rotation 0. */
   footprint: { w: number; d: number };
   /** Gameplay semantics used by the skate scene & AI. */
-  tags: Array<"ramp" | "rail" | "grind" | "flat" | "wall" | "decor" | "floor">;
+  tags: Array<"ramp" | "rail" | "grind" | "flat" | "wall" | "decor" | "floor" | "nature">;
 }
 
 /** Grid rotation in quarter turns (0, 90, 180, 270 degrees). */
@@ -35,6 +35,13 @@ export interface MapData {
   /** Number of cells along each axis (square grid). */
   size: number;
   items: PlacedItem[];
+  /**
+   * Decorative pieces placed OUTSIDE the main grid (trees, rocks, grass patches, etc).
+   * Coordinates may be negative or >= size — they live in the outer ring surrounding
+   * the skate area. These never get physics bodies in the skate scene; they're pure
+   * decoration so the park reads as a world instead of a floating tile.
+   */
+  outerItems?: PlacedItem[];
   /** Optional: a description shown on the map card. */
   blurb?: string;
   preset?: boolean;
