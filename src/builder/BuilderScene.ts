@@ -14,7 +14,7 @@ import { createWorld, type World } from "@/engine/world/createWorld";
 import { Park, gridToWorld, rotationY, worldToGrid } from "@/engine/world/park";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import { CATALOG_BY_ID } from "@/data/catalog";
-import { footprintCells, OUTER_PADDING, useGameStore } from "@/store/useGameStore";
+import { computeStackY, footprintCells, OUTER_PADDING, useGameStore } from "@/store/useGameStore";
 import type { PlacedItem, Rotation } from "@/types/game";
 
 /** Grid-based park builder: tap to place/erase, drag to orbit, long-press for dial. */
@@ -302,15 +302,23 @@ export class BuilderScene {
     const w = Math.max(...xs) - Math.min(...xs) + 1;
     const d = Math.max(...zs) - Math.min(...zs) + 1;
     const center = gridToWorld(itemId, cell.x, cell.z, rot, size);
+    // Resolve the stack Y the piece would land at so the preview sits where the real piece
+    // will — cursor + ghost both lifted onto the base's top surface.
+    const def = CATALOG_BY_ID[itemId];
+    const sourceArray = def?.category === "exteriors"
+      ? useGameStore.getState().customMap.outerItems ?? []
+      : useGameStore.getState().customMap.items;
+    const stackY = computeStackY(sourceArray, itemId, cell.x, cell.z, rot);
     this.cursor.setEnabled(true);
     this.cursor.scaling.set(w, 1, d);
     this.cursor.position.x = center.x;
     this.cursor.position.z = center.z;
+    this.cursor.position.y = stackY + 0.012;
     this.cursor.material = valid ? this.cursorOk : this.cursorBad;
     if (this.ghost) {
       this.ghost.root.setEnabled(true);
       this.ghost.root.position.copyFrom(center);
-      this.ghost.root.position.y = 0.02;
+      this.ghost.root.position.y = stackY + 0.02;
       this.ghost.root.rotation.y = rotationY(rot);
     }
   }

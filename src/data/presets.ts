@@ -15,16 +15,6 @@ const p = (itemId: string, x: number, z: number, rot: Rotation = 0): PlacedItem 
   rot,
 });
 
-/** Same shape as p() but attaches a stacking Y so the piece sits on top of a base. */
-const pStack = (itemId: string, x: number, z: number, y: number, rot: Rotation = 0): PlacedItem => ({
-  uid: `p${++uidCounter}`,
-  itemId,
-  x,
-  z,
-  rot,
-  y,
-});
-
 /** Shorthand for exterior pieces — same shape as p() but makes the preset data read as "outer". */
 const o = p;
 
@@ -203,9 +193,6 @@ const streetStudio: PlacedItem[] = [
   p("vehicle", 4, 10, 0),              // (4,10) + (5,10)
   p("pallet", 7, 10), p("plank", 8, 10, 1),
   p("plank", 10, 10, 1),
-  // Stacking demo: fence on top of a wood deck (Kenney reference image's wood-deck + fence combo).
-  pStack("fence", 7, 10, 0.15),        // fence lifted onto the pallet below
-  pStack("fence", 10, 10, 0.08, 1),    // fence lifted onto the plank below
 
   // === Row 11: south kickers + stairs sequence ===
   p("ramp", 2, 11, 2),

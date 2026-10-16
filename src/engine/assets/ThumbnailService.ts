@@ -7,6 +7,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import "@babylonjs/loaders/glTF";
 import { AssetLoader } from "./AssetLoader";
+import { measureMeshesTop, recordMeasuredTop } from "./measuredHeights";
 
 const SIZE = 256;
 
@@ -85,6 +86,11 @@ export class ThumbnailService {
       inst.root.position.setAll(0);
       inst.root.rotation.setAll(0);
       inst.root.computeWorldMatrix(true);
+      // While we have the GLB loaded for thumbnail rendering, measure its top Y so the
+      // stacking math in the Builder can lift pieces by the exact actual height instead
+      // of the catalog's eyeballed stackTop guess.
+      const top = measureMeshesTop(inst.meshes);
+      if (top > 0) recordMeasuredTop(id, top);
 
       // Characters & rides: 45° front-iso angle (not dead-on, feels more alive).
       // Park pieces: standard iso.

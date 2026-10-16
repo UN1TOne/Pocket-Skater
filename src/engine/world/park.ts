@@ -4,6 +4,7 @@ import type { MapData, PlacedItem, Rotation } from "@/types/game";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import { footprintCells } from "@/store/useGameStore";
 import { AssetLoader, type Instance } from "../assets/AssetLoader";
+import { measureMeshesTop, recordMeasuredTop } from "../assets/measuredHeights";
 import type { World } from "./createWorld";
 
 /** World-space center of a placed item's footprint (grid cell → world unit). */
@@ -74,6 +75,10 @@ export class Park {
     // Stacking: pieces placed on top of a stackable base carry an additional world-Y offset.
     if (placed.y) pos.y += placed.y;
     inst.root.position = pos;
+    // Measure actual geometry top at Y=0 reference (subtract the piece's own Y position so
+    // the recorded value is relative to the piece's base, not the stacked level).
+    const topWorld = measureMeshesTop(inst.meshes);
+    if (topWorld > 0) recordMeasuredTop(placed.itemId, topWorld - pos.y);
     inst.root.rotation.y = rotationY(placed.rot);
     inst.root.metadata = { ...inst.root.metadata, uid: placed.uid, tags: def.tags };
     for (const m of inst.meshes) m.metadata = { ...m.metadata, uid: placed.uid, tags: def.tags };

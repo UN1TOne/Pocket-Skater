@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import type { CharacterId, ItemCategory, MapData, Page, PlacedItem, PlayMode, RideId, Rotation } from "@/types/game";
 import { DEFAULT_GRID_SIZE, PRESET_MAPS } from "@/data/presets";
 import { CATALOG_BY_ID } from "@/data/catalog";
+import { MEASURED_TOPS } from "@/engine/assets/measuredHeights";
 
 /** Occupied cells for a placed item (handles footprints > 1 and rotation). */
 export function footprintCells(itemId: string, x: number, z: number, rot: Rotation): Array<[number, number]> {
@@ -27,6 +28,44 @@ export function allCellsInner(cells: Array<[number, number]>, size: number): boo
 /** True iff AT LEAST one cell is outside the inner skate grid. */
 export function anyCellOuter(cells: Array<[number, number]>, size: number): boolean {
   return cells.some(([x, z]) => x < 0 || z < 0 || x >= size || z >= size);
+}
+
+/**
+ * Pick the stack top height for a piece: live measurement (if its GLB has loaded already)
+ * wins, otherwise the catalog's hand-written stackTop guess. Returns 0 if neither — meaning
+ * nothing stacks on this piece.
+ */
+export function stackTopOf(itemId: string): number {
+  const measured = MEASURED_TOPS.get(itemId);
+  if (measured !== undefined) return measured;
+  return CATALOG_BY_ID[itemId]?.stackTop ?? 0;
+}
+
+/**
+ * Resolve the world-Y a new piece would land at if placed at (x, z, rot) in the given
+ * array. Returns 0 when there's nothing stackable beneath, otherwise base.y + base.top.
+ * Shared between the store's placeItem and the Builder's ghost/cursor preview so the
+ * on-screen hint always matches what will actually be written.
+ */
+export function computeStackY(
+  sourceArray: readonly PlacedItem[],
+  itemId: string,
+  x: number,
+  z: number,
+  rot: Rotation,
+): number {
+  const cells = footprintCells(itemId, x, z, rot);
+  let bestTop = 0;
+  for (const it of sourceArray) {
+    const top = stackTopOf(it.itemId);
+    if (!top) continue;
+    const bCells = footprintCells(it.itemId, it.x, it.z, it.rot);
+    const bCellSet = new Set(bCells.map(([bx, bz]) => `${bx},${bz}`));
+    if (!cells.every(([cx, cz]) => bCellSet.has(`${cx},${cz}`))) continue;
+    const candidate = (it.y ?? 0) + top;
+    if (candidate > bestTop) bestTop = candidate;
+  }
+  return bestTop;
 }
 
 export type BuilderTool = "place" | "erase";
@@ -162,25 +201,10 @@ export const useGameStore = create<GameState>()(
         const cellKey = (cx: number, cz: number) => `${cx},${cz}`;
         const cellKeys = new Set(cells.map(([cx, cz]) => cellKey(cx, cz)));
 
-        // Stacking: find any piece beneath whose footprint fully covers our new piece AND
-        // has a defined stackTop (i.e. a flat enough roof). The AI picks the highest matching
-        // base so chain-stacking works (platform on platform on ground).
-        const stackableBases = sourceArray.filter((it) => {
-          const bDef = CATALOG_BY_ID[it.itemId];
-          if (!bDef?.stackTop) return false;
-          const bCells = footprintCells(it.itemId, it.x, it.z, it.rot);
-          return cells.every(([cx, cz]) => bCells.some(([bx, bz]) => bx === cx && bz === cz));
-        });
-
-        if (stackableBases.length > 0) {
-          // Pick the base whose top sits highest; stack on it, don't remove anything.
-          const base = stackableBases.reduce((best, it) => {
-            const topOf = (p: PlacedItem) => (p.y ?? 0) + (CATALOG_BY_ID[p.itemId]?.stackTop ?? 0);
-            return topOf(it) > topOf(best) ? it : best;
-          });
-          const stackY = (base.y ?? 0) + (CATALOG_BY_ID[base.itemId]?.stackTop ?? 0);
-          // If the user is placing on a spot that already has a piece at the SAME stack level,
-          // replace that one (don't accumulate forever).
+        const stackY = computeStackY(sourceArray, selectedItemId, x, z, builderRotation);
+        if (stackY > 0) {
+          // Replace any piece sharing this cell at this exact stack level so the user can
+          // overwrite instead of accumulating identical pieces.
           const remaining = sourceArray.filter((it) => {
             if ((it.y ?? 0) !== stackY) return true;
             const itCells = footprintCells(it.itemId, it.x, it.z, it.rot);
@@ -191,12 +215,12 @@ export const useGameStore = create<GameState>()(
           return true;
         }
 
-        // No stackable base beneath — fall back to classic "replace same-layer" semantics.
-        // Floors stack with anything; other categories replace whatever shares their footprint
-        // at ground level only (don't touch stacked pieces).
+        // Ground level: classic "replace same-layer" semantics.
+        // Floors replace other floors; non-floors replace other non-floors; stacked pieces
+        // are left alone.
         const isFloor = def.category === "floors";
         const remaining = sourceArray.filter((it) => {
-          if ((it.y ?? 0) !== 0) return true; // keep anything stacked up
+          if ((it.y ?? 0) !== 0) return true;
           const itIsFloor = CATALOG_BY_ID[it.itemId]?.category === "floors";
           if (itIsFloor !== isFloor) return true;
           return !footprintCells(it.itemId, it.x, it.z, it.rot).some(([cx, cz]) => cellKeys.has(cellKey(cx, cz)));
