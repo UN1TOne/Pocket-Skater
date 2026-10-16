@@ -374,6 +374,14 @@ function Gameplay() {
     else setToast((t) => (t?.tone === "ai" ? t : null));
   }, [hud.grinding]);
 
+  // Score events (grind-end bonus, airtime, etc.) — show the bonus briefly.
+  useEffect(() => {
+    if (!hud.toast) return;
+    setToast({ text: `${hud.toast.text} +${hud.toast.bonus}`, tone: "grind" });
+    const timer = setTimeout(() => setToast((t) => (t?.tone === "grind" ? null : t)), 1400);
+    return () => clearTimeout(timer);
+  }, [hud.toast?.t]);
+
   const quit = () => {
     setPaused(false);
     setSetupStep(0);

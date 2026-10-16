@@ -40,6 +40,7 @@ export class SkateScene {
   private disposed = false;
   private camTarget = new Vector3();
   private respawnHistory: Array<{ pos: Vector3; t: number }> = [];
+  private grindStart = 0;
 
   constructor(private opts: SkateSceneOptions) {
     this.engine = createEngine(opts.canvas);
@@ -220,6 +221,20 @@ export class SkateScene {
       },
       onGrindChange: (g) => {
         this.opts.onHud({ grinding: g });
+        if (g) {
+          this.grindStart = performance.now();
+        } else if (this.grindStart > 0) {
+          const dur = (performance.now() - this.grindStart) / 1000;
+          this.grindStart = 0;
+          // Quadratic bonus so longer grinds feel dramatically more rewarding:
+          // 1s = +10, 2s = +40, 3s = +90, 5s = +250.
+          if (dur > 0.3) {
+            const bonus = Math.round(10 * dur * dur);
+            this.score += bonus;
+            const label = dur > 2.5 ? "SICK GRIND" : dur > 1.2 ? "LONG GRIND" : "GRIND";
+            this.opts.onHud({ score: Math.floor(this.score), toast: { text: label, bonus, t: performance.now() } });
+          }
+        }
         if (import.meta.env.DEV) {
           const log = ((window as unknown as { __grindLog?: Array<{ t: number; on: boolean; pos: [number, number, number]; speed: number; tags: string[] }> }).__grindLog ??= []);
           const pp = this.player.position;

@@ -234,26 +234,39 @@ export class PlayerController {
       if (vel.y > 1.5 && dyToRail > -0.15) vel.y *= Math.max(0, 1 - 3 * dt);
       this.body.setLinearVelocity(vel);
     } else if (!this.grounded && vel.y < 2) {
-      // Passive magnet: no explicit aim set, so raycast down and nudge toward any rail below.
-      // Used mainly in manual mode to make approaches more forgiving.
-      const sniff = new PhysicsRaycastResult();
-      this.physics.raycastToRef(
-        this.collider.position,
-        this.collider.position.add(new Vector3(0, -1.4, 0)),
-        sniff,
-      );
-      if (sniff.hasHit && sniff.body !== this.body) {
-        const meta = sniff.body?.transformNode?.metadata as { tags?: string[] } | undefined;
-        const tags = meta?.tags ?? [];
-        if (tags.includes("rail") || tags.includes("grind")) {
-          const target = sniff.hitPointWorld;
-          const dx = target.x - this.collider.position.x;
-          const dz = target.z - this.collider.position.z;
-          vel.x += dx * 16 * dt;
-          vel.z += dz * 16 * dt;
-          if (vel.y > -3) vel.y -= 20 * dt;
-          this.body.setLinearVelocity(vel);
+      // Passive magnet (manual-mode-friendly): scan a cone of downward+outward rays so the
+      // player gets pulled toward nearby rails even if not directly above them. Approaches
+      // slightly off-angle still land — matches the TAS-y, forgiving feel.
+      let bestHit = null;
+      let bestDistSq = Infinity;
+      const probes = [
+        new Vector3(0, -1.6, 0),
+        new Vector3(0.5, -1.5, 0),
+        new Vector3(-0.5, -1.5, 0),
+        new Vector3(0, -1.5, 0.5),
+        new Vector3(0, -1.5, -0.5),
+      ];
+      for (const off of probes) {
+        const sniff = new PhysicsRaycastResult();
+        this.physics.raycastToRef(this.collider.position, this.collider.position.add(off), sniff);
+        if (!sniff.hasHit || sniff.body === this.body) continue;
+        const tags = (sniff.body?.transformNode?.metadata as { tags?: string[] } | undefined)?.tags ?? [];
+        if (!tags.includes("rail") && !tags.includes("grind")) continue;
+        const dx = sniff.hitPointWorld.x - this.collider.position.x;
+        const dz = sniff.hitPointWorld.z - this.collider.position.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestDistSq) {
+          bestDistSq = d;
+          bestHit = sniff.hitPointWorld;
         }
+      }
+      if (bestHit) {
+        const dx = bestHit.x - this.collider.position.x;
+        const dz = bestHit.z - this.collider.position.z;
+        vel.x += dx * 22 * dt;
+        vel.z += dz * 22 * dt;
+        if (vel.y > -3) vel.y -= 24 * dt;
+        this.body.setLinearVelocity(vel);
       }
     }
 

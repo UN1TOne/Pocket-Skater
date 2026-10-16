@@ -37,6 +37,8 @@ export interface GameHud {
   score: number;
   grinding: boolean;
   bailed: boolean;
+  /** Transient toast — set when a scoring event happens, cleared by the UI. */
+  toast?: { text: string; bonus: number; t: number } | null;
 }
 
 interface GameState {
