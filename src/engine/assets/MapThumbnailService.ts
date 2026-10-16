@@ -1,37 +1,23 @@
 import { Engine } from "@babylonjs/core/Engines/engine";
-import { Scene } from "@babylonjs/core/scene";
-import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
-import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
-import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
-import { CreateGround } from "@babylonjs/core/Meshes/Builders/groundBuilder";
-import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import "@babylonjs/loaders/glTF";
 import type { MapData } from "@/types/game";
-import { CATALOG_BY_ID } from "@/data/catalog";
-import { AssetLoader, type Instance } from "./AssetLoader";
-import { gridToWorld, rotationY } from "../world/park";
+import { createWorld, type World } from "../world/createWorld";
+import { Park } from "../world/park";
 
-const SIZE = 320;
+const SIZE = 384;
 
 /**
  * Offscreen renderer that produces an iso-angle PNG thumbnail of an entire MapData.
- * One engine + scene are shared across calls; each render disposes the previous park
- * (so the scene doesn't accumulate meshes). Results are cached by key.
+ * Uses the full createWorld + Park pipeline (shadows, toon post-fx, gradient background,
+ * fog, grid-free ground) so preset previews look identical to the Builder's captured
+ * snapshots instead of a flat shadeless mini-scene.
  *
- * Preset maps call this with their stable id. Custom maps live in-store with their own
- * captured thumbnail (from the Builder scene canvas) and don't go through this service.
+ * The engine is shared but a fresh scene is built for every render so each park can
+ * carry its own shadow extents + sized ground. Results are cached by key.
  */
 export class MapThumbnailService {
   private engine: Engine;
-  private scene: Scene;
-  private camera: ArcRotateCamera;
-  private loader: AssetLoader;
   private canvas: HTMLCanvasElement;
-  private ground: ReturnType<typeof CreateGround>;
-  private groundMat: StandardMaterial;
-  private currentPark: Instance[] = [];
   private cache = new Map<string, string>();
   private pending = new Map<string, Promise<string>>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -48,34 +34,6 @@ export class MapThumbnailService {
       antialias: true,
       powerPreference: "low-power",
     });
-
-    this.scene = new Scene(this.engine);
-    this.scene.useRightHandedSystem = true;
-    this.scene.clearColor = new Color4(0.98, 0.78, 0.6, 1);
-    this.scene.ambientColor = new Color3(0.6, 0.6, 0.7);
-
-    // Iso camera looking at origin. Radius adjusted per-render based on map size.
-    this.camera = new ArcRotateCamera("mapthumb-cam", -Math.PI / 4, 0.9, 12, Vector3.Zero(), this.scene);
-    this.camera.fov = 0.5;
-    this.camera.minZ = 1;
-    this.camera.maxZ = 200;
-
-    const sun = new DirectionalLight("mapthumb-sun", new Vector3(0.5, -0.62, 0.55).normalize(), this.scene);
-    sun.diffuse = new Color3(1, 0.95, 0.86);
-    sun.intensity = 1.3;
-
-    const hemi = new HemisphericLight("mapthumb-hemi", new Vector3(0.2, 1, 0.1), this.scene);
-    hemi.diffuse = new Color3(0.78, 0.84, 1);
-    hemi.groundColor = new Color3(0.62, 0.48, 0.72);
-    hemi.intensity = 0.75;
-
-    this.ground = CreateGround("mapthumb-ground", { width: 20, height: 20 }, this.scene);
-    this.groundMat = new StandardMaterial("mapthumb-ground-mat", this.scene);
-    this.groundMat.diffuseColor = new Color3(0.85, 0.77, 0.68);
-    this.groundMat.specularColor = Color3.Black();
-    this.ground.material = this.groundMat;
-
-    this.loader = new AssetLoader(this.scene);
   }
 
   getThumbnail(map: MapData, cacheKey?: string): Promise<string> {
@@ -100,47 +58,45 @@ export class MapThumbnailService {
   }
 
   private async render(map: MapData, key: string): Promise<string> {
-    // Clear previous park.
-    for (const inst of this.currentPark) inst.dispose();
-    this.currentPark = [];
+    let world: World | null = null;
+    let park: Park | null = null;
+    try {
+      // Fresh world per render so shadow extents, pipeline and background all size to the map.
+      world = createWorld(this.engine, {
+        gridSize: map.size,
+        showGridLines: false,
+        orbitControls: false,
+        quality: "high",
+        visibleUnits: map.size,
+      });
 
-    // Resize ground to fit map.
-    this.ground.scaling.set(map.size / 20, 1, map.size / 20);
+      park = new Park(world, map.size);
+      await park.build(map);
 
-    // Preload all unique item ids, then instantiate.
-    const uniqueIds = [...new Set(map.items.map((i) => i.itemId))];
-    await this.loader.preload(uniqueIds);
-    const instances = await Promise.all(
-      map.items.map(async (it) => {
-        if (!CATALOG_BY_ID[it.itemId]) return null;
-        const inst = await this.loader.instantiate(it.itemId, `mapthumb:${key}:${it.uid}`);
-        inst.root.position = gridToWorld(it.itemId, it.x, it.z, it.rot, map.size);
-        inst.root.rotation.y = rotationY(it.rot);
-        return inst;
-      }),
-    );
-    this.currentPark = instances.filter((i): i is Instance => i !== null);
+      // Iso top-down framing covering the whole park. The createWorld camera already uses
+      // the ISO_ALPHA/BETA angles; we just stretch the radius so every piece fits.
+      const cam = world.camera;
+      cam.alpha = -Math.PI / 4;
+      cam.beta = 0.9;
+      cam.radius = map.size * 1.9;
+      cam.target.set(0, 0, 0);
 
-    // Frame the whole map with a bit of margin.
-    this.camera.alpha = -Math.PI / 4;
-    this.camera.beta = 0.9;
-    this.camera.radius = map.size * 1.75;
-    this.camera.target.set(0, 0, 0);
+      // Two renders: first primes shaders + shadow map, second captures.
+      await world.scene.whenReadyAsync();
+      world.scene.render();
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      world.scene.render();
 
-    await this.scene.whenReadyAsync();
-    this.scene.render();
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    this.scene.render();
-
-    const url = this.canvas.toDataURL("image/png");
-    this.cache.set(key, url);
-    return url;
+      const url = this.canvas.toDataURL("image/png");
+      this.cache.set(key, url);
+      return url;
+    } finally {
+      park?.dispose();
+      world?.dispose();
+    }
   }
 
   dispose() {
-    for (const inst of this.currentPark) inst.dispose();
-    this.loader.dispose();
-    this.scene.dispose();
     this.engine.dispose();
     this.canvas.remove();
   }

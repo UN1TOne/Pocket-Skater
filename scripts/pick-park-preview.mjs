@@ -17,8 +17,8 @@ async function main() {
   await page.waitForTimeout(5500);
   await page.getByRole("button", { name: /Skate now/i }).click();
   await page.waitForSelector("text=Pick a park", { timeout: 10000 });
-  // Give the MapThumbnailService time to render all presets (each ~1-2s because of GLB loads).
-  await page.waitForTimeout(15000);
+  // Give the MapThumbnailService time to render all presets (Street Studio has 82 pieces).
+  await page.waitForTimeout(30000);
   await page.screenshot({ path: OUT });
   console.log("Saved:", OUT);
   if (errors.length) {
