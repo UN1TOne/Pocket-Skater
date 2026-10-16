@@ -32,6 +32,8 @@ export interface SpotEntry {
 export interface Spot {
   id: string;
   kind: "grind" | "ramp";
+  /** What sort of spot this is ("grind-rail", "grind-ledge" or the ramp's catalog id) — the AI pools what it learns per model. */
+  model: string;
   /** Thin rail (rail-* physics: Y-lock + speed floor) vs flat ledge / box. */
   thin: boolean;
   /** Grind: ridable length along the line (m). Ramp: 0. */
@@ -233,6 +235,7 @@ function buildGrindSpots(pieces: RawPiece[]): Spot[] {
     const spot: Spot = {
       id: `grind:${uids[0]}`,
       kind: "grind",
+      model: thin ? "grind-rail" : "grind-ledge",
       thin,
       length,
       height: Math.max(...path.map((p) => p.y)),
@@ -277,6 +280,7 @@ function buildRampSpots(pieces: RawPiece[]): Spot[] {
     const spot: Spot = {
       id: `ramp:${p.uid}`,
       kind: "ramp",
+      model: p.def.id,
       thin: false,
       length: 0,
       height: r.lip,
