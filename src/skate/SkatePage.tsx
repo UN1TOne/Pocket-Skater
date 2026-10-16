@@ -61,7 +61,9 @@ const popToast = keyframes`
   100% { transform: translateX(-50%) scale(1) translateY(0); opacity: 1; }
 `;
 
-const Toast = styled.div<{ $tone: "grind" | "ai" }>`
+type ToastTone = "grind" | "ai" | "warn";
+
+const Toast = styled.div<{ $tone: ToastTone }>`
   position: absolute;
   left: 50%;
   top: 22%;
@@ -77,6 +79,7 @@ const Toast = styled.div<{ $tone: "grind" | "ai" }>`
     ({
       grind: css` background: linear-gradient(180deg, #ffd25a, #ff8a3d); text-shadow: 0 2px 0 rgba(0,0,0,0.2); `,
       ai: css` background: rgba(43, 35, 64, 0.8); font-size: 15px; `,
+      warn: css` background: linear-gradient(180deg, #ff6b7b, #e9445a); font-size: 15px; width: max-content; max-width: calc(100% - 32px); text-align: center; border-radius: 18px; box-shadow: 0 8px 24px rgba(233, 68, 90, 0.4); `,
     })[$tone]}
 `;
 
@@ -320,7 +323,7 @@ function Gameplay() {
   const setup = useGameStore((s) => s.setup);
   const paused = useGameStore((s) => s.paused);
   const { setHud, setPaused, setPage, setSetupStep, setSetup, getMap } = useGameStore.getState();
-  const [toast, setToast] = useState<{ text: string; tone: "grind" | "ai" } | null>(null);
+  const [toast, setToast] = useState<{ text: string; tone: ToastTone } | null>(null);
   const [showScoreInfo, setShowScoreInfo] = useState(false);
 
   useEffect(() => {
@@ -371,12 +374,17 @@ function Gameplay() {
 
   useEffect(() => {
     if (hud.grinding) setToast({ text: "✨ GRIND!", tone: "grind" });
-    else setToast((t) => (t?.tone === "ai" ? t : null));
+    else setToast((t) => (t?.tone === "ai" || t?.tone === "warn" ? t : null));
   }, [hud.grinding]);
 
   // Score events (grind-end bonus, airtime, etc.) — show the bonus briefly.
   useEffect(() => {
     if (!hud.toast) return;
+    if (hud.toast.tone === "warn") {
+      setToast({ text: `⚠️ ${hud.toast.text}`, tone: "warn" });
+      const timer = setTimeout(() => setToast((t) => (t?.tone === "warn" ? null : t)), 2600);
+      return () => clearTimeout(timer);
+    }
     setToast({ text: `${hud.toast.text} +${hud.toast.bonus}`, tone: "grind" });
     const timer = setTimeout(() => setToast((t) => (t?.tone === "grind" ? null : t)), 1400);
     return () => clearTimeout(timer);

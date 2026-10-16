@@ -3,6 +3,7 @@ import "@babylonjs/loaders/glTF";
 import type { MapData } from "@/types/game";
 import { createWorld, type World } from "../world/createWorld";
 import { Park } from "../world/park";
+import { nextFrame } from "./ThumbnailService";
 
 const SIZE = 384;
 
@@ -87,7 +88,7 @@ export class MapThumbnailService {
       // Two renders: first primes shaders + shadow map, second captures.
       await world.scene.whenReadyAsync();
       world.scene.render();
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      await nextFrame();
       world.scene.render();
 
       const url = this.canvas.toDataURL("image/png");

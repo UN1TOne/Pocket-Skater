@@ -13,7 +13,7 @@ export function useThumbnail(id: string): string | null {
     let alive = true;
     setUrl(null);
     getThumbnailService()
-      .getThumbnail(id)
+      .getThumbnail(id, true)
       .then((data) => {
         if (!alive) return;
         if (data && data.length > 200) setUrl(data);

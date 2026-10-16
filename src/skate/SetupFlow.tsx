@@ -5,9 +5,10 @@ import { PRESET_MAPS } from "@/data/presets";
 import { bgUrl } from "@/data/catalog";
 import type { CharacterId, RideId } from "@/types/game";
 import { Button, Card, Chip, IconButton, Label, Row, Title, safeBottom, safeTop } from "@/ui/primitives";
-import { pop } from "@/styles/GlobalStyle";
+import { pop, shimmer } from "@/styles/GlobalStyle";
 import { useThumbnail } from "@/engine/assets/useThumbnail";
 import { getMapThumbnailService } from "@/engine/assets/MapThumbnailService";
+import { ConfirmDialog } from "@/ui/ConfirmDialog";
 
 const Wrap = styled.div<{ $translucent: boolean }>`
   position: absolute;
@@ -165,8 +166,17 @@ const RIDES: Array<{ id: RideId; name: string; blurb: string; tag: string }> = [
 
 function ModelThumb({ id }: { id: string }) {
   const url = useThumbnail(id);
-  return url ? <img src={url} alt="" /> : <div style={{ width: "100%", aspectRatio: 1 }} />;
+  return url ? <img src={url} alt="" /> : <ThumbSkeleton aria-hidden="true" />;
 }
+
+const ThumbSkeleton = styled.div`
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  background: linear-gradient(90deg, #ece6f3 0%, #f8f5fb 50%, #ece6f3 100%) 0 0 / 200% 100%;
+  animation: ${shimmer} 1.2s linear infinite;
+  @media (prefers-reduced-motion: reduce) { animation: none; }
+`;
 
 /**
  * Map thumbnail. For custom maps we use the Builder's captured PNG (lives on
@@ -234,6 +244,13 @@ export function SetupFlow() {
   const customCount = useGameStore((s) => s.customMap.items.length);
   const customName = useGameStore((s) => s.customMap.name);
   const { setSetup, setSetupStep, setPage } = useGameStore.getState();
+  const [needsBuild, setNeedsBuild] = useState(false);
+
+  // An empty custom park can't be ridden: offer the Builder instead of selecting it.
+  const pickMap = (id: string) => {
+    if (id === "custom" && customCount === 0) setNeedsBuild(true);
+    else setSetup({ mapId: id });
+  };
 
   const maps = [
     ...PRESET_MAPS.map((m) => ({ id: m.id, name: m.name, blurb: m.blurb ?? "", tag: "Preset" })),
@@ -265,7 +282,7 @@ export function SetupFlow() {
           <Sub>Preset dioramas, or the one you built.</Sub>
           <Grid $cols={2}>
             {maps.map((m, i) => (
-              <Option key={m.id} $selected={setup.mapId === m.id} $delay={i * 60} onClick={() => setSetup({ mapId: m.id })}>
+              <Option key={m.id} $selected={setup.mapId === m.id} $delay={i * 60} onClick={() => pickMap(m.id)}>
                 {setup.mapId === m.id && <Check>✓</Check>}
                 <MapThumb mapId={m.id} />
                 <h3>{m.name}</h3>
@@ -327,6 +344,29 @@ export function SetupFlow() {
           {step === 2 ? "Drop in 🛹" : "Next →"}
         </Button>
       </Bottom>
+      {needsBuild && (
+        <ConfirmDialog
+          title="No custom park yet"
+          message="You need to build a park before you can ride it. Head to the Builder and make one now?"
+          icon={<BuildIcon />}
+          onConfirm={() => {
+            setNeedsBuild(false);
+            setPage("builder");
+          }}
+          onCancel={() => setNeedsBuild(false)}
+        />
+      )}
     </Wrap>
+  );
+}
+
+function BuildIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <path d="M17.5 14v7M14 17.5h7" />
+    </svg>
   );
 }
