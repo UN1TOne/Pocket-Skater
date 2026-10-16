@@ -21,6 +21,12 @@ export interface CatalogItem {
    * Undefined means the piece has no useful top (ramps, rails, slopes etc.).
    */
   stackTop?: number;
+  /**
+   * True when the piece bends — the ridable surface is an arc, not a straight segment.
+   * updateRailFromHit uses this to compute the tangent as perp(hit - pieceCenter) instead
+   * of the piece's local +Z axis, so the rail-run physics follows the actual curve.
+   */
+  curved?: boolean;
 }
 
 /** Grid rotation in quarter turns (0, 90, 180, 270 degrees). */

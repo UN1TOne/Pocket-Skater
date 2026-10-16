@@ -17,8 +17,8 @@ export const CATALOG: CatalogItem[] = [
   { id: "rail-low", label: "Low Rail", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
   { id: "rail-low-end", label: "Low Rail End", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
   { id: "rail-high", label: "High Rail", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
-  { id: "rail-curve", label: "Curved Rail", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
-  { id: "rail-high-curve", label: "High Curve", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
+  { id: "rail-curve", label: "Curved Rail", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"], curved: true },
+  { id: "rail-high-curve", label: "High Curve", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"], curved: true },
   { id: "rail-slope", label: "Slope Rail", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
   { id: "rail-slope-smooth", label: "Smooth Slope", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
 

@@ -12,6 +12,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import type { RideId } from "@/types/game";
+import { CATALOG_BY_ID } from "@/data/catalog";
 import { SkateFX } from "@/engine/effects/Particles";
 
 export type RiderState = "idle" | "riding" | "air" | "grinding" | "bailed";
@@ -485,8 +486,35 @@ export class PlayerController {
       this.railDir = null;
       return;
     }
-    const uid = (node.metadata as { uid?: string } | undefined)?.uid;
+    const nodeMeta = node.metadata as { uid?: string; itemId?: string } | undefined;
+    const uid = nodeMeta?.uid;
+    const itemId = nodeMeta?.itemId;
+    const def = itemId ? CATALOG_BY_ID[itemId] : undefined;
     const hit = this.ray.hitPointWorld;
+
+    // Curved rails: ignore the piece's local +Z axis and derive the tangent from the arc
+    // itself — perpendicular to the radial from the piece's center to the hit point. This
+    // keeps the rider on the rail through 90° bends instead of flying off along a straight
+    // chord. Direction is chosen to match the rider's current velocity so they keep going.
+    if (def?.curved) {
+      const center = node.getAbsolutePosition();
+      const dx = hit.x - center.x;
+      const dz = hit.z - center.z;
+      const rl = Math.hypot(dx, dz);
+      if (rl > 0.05) {
+        let tx = -dz / rl;
+        let tz = dx / rl;
+        const v = this.lastVel;
+        if (tx * v.x + tz * v.z < 0) {
+          tx = -tx;
+          tz = -tz;
+        }
+        this.railDir = new Vector3(tx, 0, tz);
+        this.railCenter.copyFrom(hit);
+        return;
+      }
+      // Hit landed exactly on the piece center — fall through to the straight-sample path.
+    }
 
     const roughFwd = Vector3.TransformNormal(new Vector3(0, 0, 1), node.getWorldMatrix());
     roughFwd.y = 0;
