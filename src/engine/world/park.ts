@@ -4,6 +4,7 @@ import type { MapData, PlacedItem, Rotation } from "@/types/game";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import { footprintCells } from "@/store/useGameStore";
 import { AssetLoader, type Instance } from "../assets/AssetLoader";
+import { measureMeshesTop, recordMeasuredTop } from "../assets/measuredHeights";
 import type { World } from "./createWorld";
 
 /** World-space center of a placed item's footprint (grid cell → world unit). */
@@ -33,7 +34,7 @@ export interface ParkPiece {
 }
 
 const samePlacement = (a: PlacedItem, b: PlacedItem) =>
-  a.itemId === b.itemId && a.x === b.x && a.z === b.z && a.rot === b.rot;
+  a.itemId === b.itemId && a.x === b.x && a.z === b.z && a.rot === b.rot && (a.y ?? 0) === (b.y ?? 0);
 
 /** Instantiates a MapData into the world; the Builder uses it live, the Skate scene builds it once. */
 export class Park {
@@ -52,21 +53,43 @@ export class Park {
   }
 
   async build(map: MapData) {
-    await this.loader.preload([...new Set(map.items.map((i) => i.itemId))]);
-    await Promise.all(map.items.map((it) => this.add(it)));
+    const all = [...map.items, ...(map.outerItems ?? [])];
+    await this.loader.preload([...new Set(all.map((i) => i.itemId))]);
+    await Promise.all(all.map((it) => this.add(it)));
   }
 
   async add(placed: PlacedItem): Promise<ParkPiece | null> {
-    if (!CATALOG_BY_ID[placed.itemId]) return null;
+    const def = CATALOG_BY_ID[placed.itemId];
+    if (!def) return null;
     const inst = await this.loader.instantiate(placed.itemId, `piece:${placed.uid}`);
     if (this.pieces.has(placed.uid)) {
       inst.dispose();
       return this.pieces.get(placed.uid)!;
     }
-    inst.root.position = gridToWorld(placed.itemId, placed.x, placed.z, placed.rot, this.gridSize);
+    const pos = gridToWorld(placed.itemId, placed.x, placed.z, placed.rot, this.gridSize);
+    // Exterior pieces live purely as decoration. Their bases sit at Y=0 by design, which
+    // puts them in the same plane as the slab (Y=0.002), the apron (Y=0), and the curb top
+    // (Y=0.12). Flat patches (patch-dirt/patch-grass have 1×1 flat bottoms at local Y=0)
+    // z-fight with the apron, and the iso camera + SSAO + ink-outline (depthThreshold=0.014)
+    // amplify tiny depth gaps into visible stippled noise. Lift keeps geometry buffers
+    // honest; zOffset covers the main pass + handles any residual coplanar overlap with
+    // the curb or neighbouring exteriors.
+    if (def.category === "exteriors") {
+      pos.y = 0.04;
+      for (const m of inst.meshes) {
+        if (m.material) m.material.zOffset = -1;
+      }
+    }
+    // Stacking: pieces placed on top of a stackable base carry an additional world-Y offset.
+    if (placed.y) pos.y += placed.y;
+    inst.root.position = pos;
+    // Measure actual geometry top at Y=0 reference (subtract the piece's own Y position so
+    // the recorded value is relative to the piece's base, not the stacked level).
+    const topWorld = measureMeshesTop(inst.meshes);
+    if (topWorld > 0) recordMeasuredTop(placed.itemId, topWorld - pos.y);
     inst.root.rotation.y = rotationY(placed.rot);
-    inst.root.metadata = { ...inst.root.metadata, uid: placed.uid, tags: CATALOG_BY_ID[placed.itemId].tags };
-    for (const m of inst.meshes) m.metadata = { ...m.metadata, uid: placed.uid, tags: CATALOG_BY_ID[placed.itemId].tags };
+    inst.root.metadata = { ...inst.root.metadata, uid: placed.uid, tags: def.tags };
+    for (const m of inst.meshes) m.metadata = { ...m.metadata, uid: placed.uid, tags: def.tags };
     this.world.addShadowCaster(inst.root, true);
     const piece = { placed, instance: inst };
     this.pieces.set(placed.uid, piece);
@@ -82,18 +105,23 @@ export class Park {
   }
 
   /** Diff-sync against a new item list; also updates in-place rotation/position for same-uid pieces. */
-  async sync(items: PlacedItem[]) {
-    const wanted = new Map(items.map((i) => [i.uid, i]));
+  async sync(items: PlacedItem[], outerItems: PlacedItem[] = []) {
+    const combined = [...items, ...outerItems];
+    const wanted = new Map(combined.map((i) => [i.uid, i]));
     for (const uid of [...this.pieces.keys()]) if (!wanted.has(uid)) this.remove(uid);
-    for (const item of items) {
+    for (const item of combined) {
       const existing = this.pieces.get(item.uid);
       if (!existing) continue;
       if (samePlacement(existing.placed, item)) continue;
-      existing.instance.root.position = gridToWorld(item.itemId, item.x, item.z, item.rot, this.gridSize);
+      const def = CATALOG_BY_ID[item.itemId];
+      const pos = gridToWorld(item.itemId, item.x, item.z, item.rot, this.gridSize);
+      if (def?.category === "exteriors") pos.y = 0.04;
+      if (item.y) pos.y += item.y;
+      existing.instance.root.position = pos;
       existing.instance.root.rotation.y = rotationY(item.rot);
       existing.placed = item;
     }
-    const toAdd = items.filter((i) => !this.pieces.has(i.uid));
+    const toAdd = combined.filter((i) => !this.pieces.has(i.uid));
     await Promise.all(toAdd.map((i) => this.add(i)));
   }
 

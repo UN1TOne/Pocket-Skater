@@ -12,6 +12,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { AnimationGroup } from "@babylonjs/core/Animations/animationGroup";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import type { RideId } from "@/types/game";
+import { CATALOG_BY_ID } from "@/data/catalog";
 import { SkateFX } from "@/engine/effects/Particles";
 
 export type RiderState = "idle" | "riding" | "air" | "grinding" | "bailed";
@@ -65,9 +66,26 @@ export class PlayerController {
   airtime = 0;
   /** Manual vs AI driving — AI gets more forgiving bail thresholds. */
   driver: "manual" | "ai" = "manual";
+  /**
+   * External pull target used by the AI when jumping toward a known rail. While airborne,
+   * velocity is pulled aggressively toward this XZ position + downward toward its Y. The
+   * optional axis is the rail's along direction — when provided, perpendicular-to-axis
+   * velocity is damped during flight so the player can't drift off the rail's line.
+   * Cleared on bail or when the AI gives up on the plan; preserved while grinding so the
+   * Y lock keeps using the known rail top.
+   */
+  airRailTarget: { x: number; y: number; z: number; ax?: number; az?: number } | null = null;
   private railDir: Vector3 | null = null;
   private railCenter = new Vector3();
   private railIsThin = false;
+  /**
+   * On grind entry, pin the player to the rail for a short commitment window: during this
+   * time we hard-snap Y to the rail top and zero any lateral drift so the first frames of
+   * contact can't bounce back off into air. Decays naturally after ~0.35s.
+   */
+  private grindLockTimer = 0;
+  /** True while probeGround should accept a slightly wider range (we've been on a rail). */
+  private railStickFrames = 0;
   private rayFwd = new PhysicsRaycastResult();
   private rayBwd = new PhysicsRaycastResult();
   private lastVel = new Vector3();
@@ -150,9 +168,19 @@ export class PlayerController {
     });
   }
 
-  requestJump() {
-    this.jumpRequested = true;
+  /** Non-destructive teleport back to the last safe position — used to escape physics pins. */
+  unstick() {
+    this.teleport(this.lastSafePos.clone());
+    this.airRailTarget = null;
+    this.grindLockTimer = 0;
   }
+
+  requestJump(speed?: number) {
+    this.jumpRequested = true;
+    this.pendingJumpSpeed = speed;
+  }
+
+  private pendingJumpSpeed: number | undefined;
 
   /** Call once per frame — only touches velocities, so before/after physics is fine. */
   update(dt: number) {
@@ -163,37 +191,83 @@ export class PlayerController {
     }
     this.visual.setEnabled(true);
     this.bailCooldown = Math.max(0, this.bailCooldown - dt);
+    this.grindLockTimer = Math.max(0, this.grindLockTimer - dt);
 
     const t = this.tuning;
     const vel = this.body.getLinearVelocity();
     this.probeGround();
+    // Track whether we were recently on a rail so the next frame's probe gets its wider reach.
+    if (this.grounded && (this.groundTags.includes("rail") || this.groundTags.includes("grind"))) {
+      this.railStickFrames = 4;
+    } else if (this.railStickFrames > 0) {
+      this.railStickFrames -= 1;
+    }
 
     // Kill gravity while on a thin rail so the sphere can't be dragged off the top.
     const onThinRail = this.grounded && this.railIsThin && this.railDir !== null && this.groundTags.includes("rail");
     this.body.setGravityFactor(onThinRail ? 0 : 1);
 
-    // Air-to-rail magnet: while airborne, if a rail is just below us, nudge our x/z toward
-    // the rail center and bias velocity downward so we actually land on it instead of
-    // sailing past. Makes AI jumps onto rails viable and manual approaches more forgiving.
-    if (!this.grounded && vel.y < 2) {
-      const sniff = new PhysicsRaycastResult();
-      this.physics.raycastToRef(
-        this.collider.position,
-        this.collider.position.add(new Vector3(0, -1.2, 0)),
-        sniff,
-      );
-      if (sniff.hasHit && sniff.body !== this.body) {
-        const meta = sniff.body?.transformNode?.metadata as { tags?: string[] } | undefined;
-        const tags = meta?.tags ?? [];
-        if (tags.includes("rail")) {
-          const target = sniff.hitPointWorld;
-          const dx = target.x - this.collider.position.x;
-          const dz = target.z - this.collider.position.z;
-          vel.x += dx * 14 * dt;
-          vel.z += dz * 14 * dt;
-          if (vel.y > -3) vel.y -= 18 * dt;
-          this.body.setLinearVelocity(vel);
+    // Air-to-rail magnet. Two modes:
+    //  1. Explicit (AI): airRailTarget is set — strong XZ pull toward the rail, perpendicular
+    //     velocity damped to axis direction, downward bias once above the rail top.
+    //  2. Passive: raycast straight down and nudge toward a rail directly below (manual helper).
+    const aim = this.airRailTarget;
+    const hasAxis = !!aim && typeof aim.ax === "number" && typeof aim.az === "number";
+    if (!this.grounded && aim) {
+      const dx = aim.x - this.collider.position.x;
+      const dz = aim.z - this.collider.position.z;
+      const dyToRail = this.collider.position.y - (aim.y + this.tuning.radius * 0.5);
+      vel.x += dx * 32 * dt;
+      vel.z += dz * 32 * dt;
+      if (hasAxis) {
+        // Kill perpendicular-to-rail velocity so a slight sideways drift at jump time doesn't
+        // deposit us beside the rail instead of on it.
+        const ax = aim.ax!;
+        const az = aim.az!;
+        const perpX = -az;
+        const perpZ = ax;
+        const perpVel = vel.x * perpX + vel.z * perpZ;
+        const perpKill = perpVel * Math.min(1, 20 * dt);
+        vel.x -= perpX * perpKill;
+        vel.z -= perpZ * perpKill;
+      }
+      if (dyToRail > 0 && vel.y > -3.5) vel.y -= 32 * dt;
+      if (vel.y > 1.5 && dyToRail > -0.15) vel.y *= Math.max(0, 1 - 3 * dt);
+      this.body.setLinearVelocity(vel);
+    } else if (!this.grounded && vel.y < 2) {
+      // Passive magnet (manual-mode-friendly): scan a cone of downward+outward rays so the
+      // player gets pulled toward nearby rails even if not directly above them. Approaches
+      // slightly off-angle still land — matches the TAS-y, forgiving feel.
+      let bestHit = null;
+      let bestDistSq = Infinity;
+      const probes = [
+        new Vector3(0, -1.6, 0),
+        new Vector3(0.5, -1.5, 0),
+        new Vector3(-0.5, -1.5, 0),
+        new Vector3(0, -1.5, 0.5),
+        new Vector3(0, -1.5, -0.5),
+      ];
+      for (const off of probes) {
+        const sniff = new PhysicsRaycastResult();
+        this.physics.raycastToRef(this.collider.position, this.collider.position.add(off), sniff);
+        if (!sniff.hasHit || sniff.body === this.body) continue;
+        const tags = (sniff.body?.transformNode?.metadata as { tags?: string[] } | undefined)?.tags ?? [];
+        if (!tags.includes("rail") && !tags.includes("grind")) continue;
+        const dx = sniff.hitPointWorld.x - this.collider.position.x;
+        const dz = sniff.hitPointWorld.z - this.collider.position.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestDistSq) {
+          bestDistSq = d;
+          bestHit = sniff.hitPointWorld;
         }
+      }
+      if (bestHit) {
+        const dx = bestHit.x - this.collider.position.x;
+        const dz = bestHit.z - this.collider.position.z;
+        vel.x += dx * 22 * dt;
+        vel.z += dz * 22 * dt;
+        if (vel.y > -3) vel.y -= 24 * dt;
+        this.body.setLinearVelocity(vel);
       }
     }
 
@@ -233,16 +307,24 @@ export class PlayerController {
     if (this.jumpRequested) {
       this.jumpRequested = false;
       if (this.grounded) {
-        newVel.y = Math.max(newVel.y, 0) + t.jumpSpeed;
+        const jSpeed = this.pendingJumpSpeed ?? t.jumpSpeed;
+        newVel.y = Math.max(newVel.y, 0) + jSpeed;
         newVel.addInPlace(this.groundNormal.scale(0.7));
         this.grounded = false;
         this.fx.burstPoof(6);
         this.events.onJump?.();
       }
+      this.pendingJumpSpeed = undefined;
     }
 
     this.body.setLinearVelocity(newVel);
     this.lastVel.copyFrom(newVel);
+
+    // Fresh rail contact → arm the commitment window BEFORE rail assist, so the first frame
+    // of grinding already gets the hard Y snap + perp zero.
+    if (this.grounded && this.groundTags.includes("rail") && this.state !== "grinding") {
+      this.grindLockTimer = 0.35;
+    }
 
     // Rail assist: decompose velocity into along/perpendicular, drive along forward with a
     // minimum speed, kill perpendicular motion, and (for thin rails) lock the rider's Y to
@@ -253,7 +335,9 @@ export class PlayerController {
       const perpZ = dir.x;
       const along = newVel.x * dir.x + newVel.z * dir.z;
       const perp = newVel.x * perpX + newVel.z * perpZ;
-      const minRailSpeed = this.railIsThin ? 3.2 : 0;
+      // Thin rails: hard floor at 3.2 m/s. Flat grinds (ledges/boxes): softer 2.2 m/s floor so
+      // the AI doesn't bleed to a halt mid-grind. Both still carry the grind score.
+      const minRailSpeed = this.railIsThin ? 3.2 : 2.2;
 
       let sign: number;
       if (Math.abs(along) > 0.4) sign = along >= 0 ? 1 : -1;
@@ -270,23 +354,32 @@ export class PlayerController {
       newVel.z = dir.z * newAlong + perpZ * newPerp;
 
       if (this.railIsThin) {
-        // Lateral spring back to centerline (very stiff).
+        // While on a thin rail, hard-pin collider position directly. Havok defaults to
+        // disablePreStep=true (body authoritative), so transform writes are normally
+        // ignored. We flip it to false during grinding so pos writes propagate, and restore
+        // it when leaving the rail.
+        this.body.disablePreStep = false;
+        const knownY = this.airRailTarget?.y;
+        const yBase = typeof knownY === "number" ? knownY : this.railCenter.y;
+        const yTarget = yBase + this.tuning.radius;
         const dx = this.collider.position.x - this.railCenter.x;
         const dz = this.collider.position.z - this.railCenter.z;
         const latOff = dx * perpX + dz * perpZ;
-        const latAccel = -latOff * 160;
-        newVel.x += perpX * latAccel * dt;
-        newVel.z += perpZ * latAccel * dt;
-
-        // Y lock: pin the collider to railCenter.y + sphere radius so gravity can't bleed
-        // the rider off the rail. Velocity goes toward the correction, with no downward
-        // escape allowed while on the rail.
-        const yTarget = this.railCenter.y + this.tuning.radius;
-        const yOff = this.collider.position.y - yTarget;
-        const yAccel = -yOff * 50 - newVel.y * 10;
-        newVel.y += yAccel * dt;
-        if (newVel.y < 0 && yOff < 0.08) newVel.y = Math.max(newVel.y, 0);
+        this.collider.position.x -= perpX * latOff;
+        this.collider.position.z -= perpZ * latOff;
+        this.collider.position.y = yTarget;
+        newVel.x = dir.x * newAlong;
+        newVel.z = dir.z * newAlong;
+        newVel.y = 0;
       }
+      // CRITICAL: the setLinearVelocity earlier in update() captured newVel BEFORE rail assist,
+      // so the along-clamp and perp-kill never actually reached the body. Push the updated
+      // newVel to the body again now that rail assist has finished.
+      this.body.setLinearVelocity(newVel);
+      this.lastVel.copyFrom(newVel);
+    } else if (!this.grounded || !this.groundTags.includes("rail")) {
+      // Left the rail: hand the body back to physics authority.
+      this.body.disablePreStep = true;
     }
 
     const hSpeed = Math.hypot(newVel.x, newVel.z);
@@ -308,6 +401,11 @@ export class PlayerController {
     }
     if (next !== this.state) {
       if ((next === "grinding") !== (this.state === "grinding")) this.events.onGrindChange?.(next === "grinding");
+      if (next === "grinding" && this.state !== "grinding") {
+        // Commitment window: for the next ~0.35s we hard-pin to the rail so the first frames
+        // of contact can't bounce back off into air.
+        this.grindLockTimer = 0.35;
+      }
       this.state = next;
       if (next === "air") this.play(this.airtime > 0.5 ? "skate-grab" : "skate-air", true);
       else if (next === "grinding") this.play("skate-grab", true);
@@ -341,14 +439,18 @@ export class PlayerController {
   private probeGround() {
     const r = this.tuning.radius;
     const from = this.collider.position;
-    const to = from.add(new Vector3(0, -(r + 0.12), 0));
+    // Give the probe extra reach while on a rail — Y-lock oscillation can lift the sphere
+    // just enough that a tight probe would drop grounded=false and spill us back into air.
+    const stickBonus = this.state === "grinding" || this.railStickFrames > 0 || this.grindLockTimer > 0 ? 0.25 : 0;
+    const to = from.add(new Vector3(0, -(r + 0.12 + stickBonus), 0));
     this.physics.raycastToRef(from, to, this.ray, { collideWith: ~0 });
     let hit = this.ray.hasHit && this.ray.body !== this.body;
     if (!hit) {
-      // Fall back to 4 slanted probes for curved surfaces (bowls).
+      // Fall back to 4 slanted probes for curved surfaces (bowls) + rail seams.
+      const reach = r + 0.1 + stickBonus;
       for (let i = 0; i < 4 && !hit; i++) {
         const a = (i / 4) * Math.PI * 2;
-        const dir = new Vector3(Math.cos(a) * 0.6, -0.8, Math.sin(a) * 0.6).normalize().scaleInPlace(r + 0.1);
+        const dir = new Vector3(Math.cos(a) * 0.6, -0.8, Math.sin(a) * 0.6).normalize().scaleInPlace(reach);
         this.physics.raycastToRef(from, from.add(dir), this.ray, { collideWith: ~0 });
         hit = this.ray.hasHit && this.ray.body !== this.body;
       }
@@ -384,8 +486,58 @@ export class PlayerController {
       this.railDir = null;
       return;
     }
-    const uid = (node.metadata as { uid?: string } | undefined)?.uid;
+    const nodeMeta = node.metadata as { uid?: string; itemId?: string } | undefined;
+    const uid = nodeMeta?.uid;
+    const itemId = nodeMeta?.itemId;
+    const def = itemId ? CATALOG_BY_ID[itemId] : undefined;
     const hit = this.ray.hitPointWorld;
+
+    // Curved rails: perp-radial gives tangent magnitude, but the sign (CCW vs CW around
+    // the arc) depends on model-authoring convention and is ambiguous when velocity ⊥
+    // tangent at entry (dot≈0 → no flip → wrong half-tangent). To resolve: walk a small
+    // ARC STEP (dθ≈17°) in each rotational direction and raycast — the step that lands on
+    // the same piece is the arc's real continuation. Angular stepping (vs straight-line
+    // probing) stays at the arc radius so the probe doesn't fall off a thin curved rail
+    // just because the arc is bending.
+    if (def?.curved) {
+      const center = node.getAbsolutePosition();
+      const dx = hit.x - center.x;
+      const dz = hit.z - center.z;
+      const rl = Math.hypot(dx, dz);
+      if (rl > 0.05) {
+        const dTheta = 0.3;
+        const probeArc = (sign: number, result: PhysicsRaycastResult): boolean => {
+          const c = Math.cos(dTheta * sign);
+          const s = Math.sin(dTheta * sign);
+          const nx = dx * c - dz * s;
+          const nz = dx * s + dz * c;
+          const px = center.x + nx;
+          const pz = center.z + nz;
+          const from = new Vector3(px, hit.y + 0.3, pz);
+          const to = new Vector3(px, hit.y - 0.4, pz);
+          this.physics.raycastToRef(from, to, result);
+          if (!result.hasHit) return false;
+          const hitMeta = result.body?.transformNode?.metadata as { uid?: string } | undefined;
+          return !uid || hitMeta?.uid === uid;
+        };
+        const ccwOn = probeArc(+1, this.rayFwd);
+        const cwOn = probeArc(-1, this.rayBwd);
+        let tx = -dz / rl;
+        let tz = dx / rl;
+        const v = this.lastVel;
+        if (cwOn && !ccwOn) {
+          tx = -tx; tz = -tz;
+        } else if (ccwOn && cwOn) {
+          if (tx * v.x + tz * v.z < 0) { tx = -tx; tz = -tz; }
+        } else if (!ccwOn && !cwOn) {
+          if (tx * v.x + tz * v.z < 0) { tx = -tx; tz = -tz; }
+        }
+        this.railDir = new Vector3(tx, 0, tz);
+        this.railCenter.copyFrom(hit);
+        return;
+      }
+      // Hit landed exactly on the piece center — fall through to the straight-sample path.
+    }
 
     const roughFwd = Vector3.TransformNormal(new Vector3(0, 0, 1), node.getWorldMatrix());
     roughFwd.y = 0;
@@ -424,6 +576,9 @@ export class PlayerController {
     if (!normal || this.state === "bailed" || this.bailCooldown > 0) return;
     const n = normal;
     const tags = meta?.tags ?? [];
+    // Rails and grind ledges are intended landing targets — never bail from colliding with them.
+    // Side-hits during the air-to-rail approach would otherwise wipe the whole run.
+    if (tags.includes("rail") || tags.includes("grind")) return;
     const isWall = meta?.kind === "wall" || tags.includes("wall");
     // Ramps/bowls are meant to be steep — only their vertical backs count as walls.
     const steepLimit = tags.includes("ramp") ? 0.12 : isWall ? 0.5 : 0.35;
@@ -443,6 +598,7 @@ export class PlayerController {
     if (this.state === "bailed") return;
     this.state = "bailed";
     this.bailCooldown = 1.1;
+    this.airRailTarget = null;
     this.fx.setGrinding(false);
     this.fx.setSpeed(0);
     this.fx.burstPoof(14);

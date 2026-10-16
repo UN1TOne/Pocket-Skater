@@ -40,6 +40,7 @@ export class SkateScene {
   private disposed = false;
   private camTarget = new Vector3();
   private respawnHistory: Array<{ pos: Vector3; t: number }> = [];
+  private grindStart = 0;
 
   constructor(private opts: SkateSceneOptions) {
     this.engine = createEngine(opts.canvas);
@@ -82,21 +83,121 @@ export class SkateScene {
     if (this.disposed) return;
 
     const staticMeshes: Mesh[] = [this.world.ground.slab];
-    const pois: PointOfInterest[] = [];
+    // Phase 1: register physics on every placed piece and collect raw per-piece info.
+    interface RawPiece {
+      x: number;
+      z: number;
+      rot: number;
+      def: typeof CATALOG_BY_ID[string];
+      pos: Vector3;
+      topY: number;
+    }
+    const rawPieces: RawPiece[] = [];
     for (const piece of this.park.pieces.values()) {
       const def = CATALOG_BY_ID[piece.placed.itemId];
-      if (!def || def.category === "floors") continue;
+      // Floors have no collider (walked-on only); exteriors are pure decoration (trees, rocks,
+      // grass) outside the skate zone and never get a physics body.
+      if (!def || def.category === "floors" || def.category === "exteriors") continue;
+      let maxY = 0;
       for (const m of piece.instance.meshes) {
         if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
         m.metadata = { ...m.metadata, kind: def.tags.includes("wall") ? "wall" : "piece", tags: def.tags };
         new PhysicsAggregate(m, PhysicsShapeType.MESH, { mass: 0, friction: 0.25, restitution: 0 }, scene);
         staticMeshes.push(m);
+        m.computeWorldMatrix(true);
+        const by = m.getBoundingInfo().boundingBox.maximumWorld.y;
+        if (by > maxY) maxY = by;
       }
       const p = gridToWorld(def.id, piece.placed.x, piece.placed.z, piece.placed.rot, map.size);
-      const yaw = rotationY(piece.placed.rot);
-      const axis = new Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-      if (def.tags.includes("ramp")) pois.push({ position: p, kind: "ramp", axis });
-      else if (def.tags.includes("grind") || def.tags.includes("rail")) pois.push({ position: p, kind: "grind", axis });
+      rawPieces.push({ x: piece.placed.x, z: piece.placed.z, rot: piece.placed.rot, def, pos: p, topY: maxY });
+    }
+
+    // Phase 2: group adjacent grind pieces into chains so the AI aims at the full line
+    // instead of a 1m fragment. Pieces chain when they share the same major axis (rot 0/2 vs 1/3),
+    // the same perpendicular grid coord, and are in consecutive cells along the axis — AND their
+    // top heights match within a tolerance (so low/high rails don't merge).
+    //
+    // We also key chains by whether the group has mixed rail-* vs ledge-* tags, keeping those apart.
+    const pois: PointOfInterest[] = [];
+    // Only chain thin rail pieces (rail-*). Non-thin grind pieces (ledges, boxes) don't have the
+    // Y lock + minRailSpeed physics so the AI can't persistently grind them — leaving them as
+    // solo POIs so the weighted picker deprioritizes them.
+    const thinRailRaw = rawPieces.filter((r) => r.def.tags.includes("rail"));
+    const otherGrindRaw = rawPieces.filter(
+      (r) => !r.def.tags.includes("rail") && r.def.tags.includes("grind"),
+    );
+    const nonGrindRaw = rawPieces.filter(
+      (r) => !r.def.tags.includes("rail") && !r.def.tags.includes("grind"),
+    );
+    const consumed = new Set<RawPiece>();
+    for (const seed of thinRailRaw) {
+      if (consumed.has(seed)) continue;
+      const axisAlongZ = seed.rot % 2 === 0; // rot 0,2 → axis Z; rot 1,3 → axis X
+      const perpKey = axisAlongZ ? seed.x : seed.z;
+      // Collect every thin rail on the same perpendicular line with matching topY tolerance.
+      const candidates = thinRailRaw.filter(
+        (r) =>
+          !consumed.has(r) &&
+          r.rot % 2 === seed.rot % 2 &&
+          (axisAlongZ ? r.x === perpKey : r.z === perpKey) &&
+          Math.abs(r.topY - seed.topY) < 0.15,
+      );
+      // Sort along axis.
+      candidates.sort((a, b) => (axisAlongZ ? a.z - b.z : a.x - b.x));
+      // Walk from the seed outward in both directions, keeping only pieces that are grid-adjacent.
+      const seedIdx = candidates.indexOf(seed);
+      const chain: RawPiece[] = [seed];
+      consumed.add(seed);
+      for (let i = seedIdx - 1; i >= 0; i--) {
+        const prev = chain[0];
+        const cur = candidates[i];
+        const gap = axisAlongZ ? prev.z - cur.z : prev.x - cur.x;
+        if (gap !== 1) break;
+        chain.unshift(cur);
+        consumed.add(cur);
+      }
+      for (let i = seedIdx + 1; i < candidates.length; i++) {
+        const prev = chain[chain.length - 1];
+        const cur = candidates[i];
+        const gap = axisAlongZ ? cur.z - prev.z : cur.x - prev.x;
+        if (gap !== 1) break;
+        chain.push(cur);
+        consumed.add(cur);
+      }
+      // Build one POI for the whole chain.
+      const first = chain[0];
+      const last = chain[chain.length - 1];
+      const centerX = (first.pos.x + last.pos.x) / 2;
+      const centerZ = (first.pos.z + last.pos.z) / 2;
+      const length = chain.length; // 1 world unit per cell
+      const topY = chain.reduce((m, r) => Math.max(m, r.topY), 0);
+      pois.push({
+        position: new Vector3(centerX, 0, centerZ),
+        kind: "grind",
+        axis: new Vector3(axisAlongZ ? 0 : 1, 0, axisAlongZ ? 1 : 0),
+        length,
+        topY,
+        thin: true,
+      });
+    }
+    // Non-thin grind pieces (ledges, boxes) stay as solo POIs — AI can target but weighted lower.
+    for (const r of otherGrindRaw) {
+      const yaw = rotationY(r.rot as 0 | 1 | 2 | 3);
+      pois.push({
+        position: r.pos,
+        kind: "grind",
+        axis: new Vector3(Math.sin(yaw), 0, Math.cos(yaw)),
+        length: 1,
+        topY: r.topY,
+        thin: false,
+      });
+    }
+    // Keep ramp POIs for occasional variety.
+    for (const r of nonGrindRaw) {
+      if (r.def.tags.includes("ramp")) {
+        const yaw = rotationY(r.rot as 0 | 1 | 2 | 3);
+        pois.push({ position: r.pos, kind: "ramp", axis: new Vector3(Math.sin(yaw), 0, Math.cos(yaw)) });
+      }
     }
 
     onProgress?.("Lacing up…");
@@ -120,7 +221,29 @@ export class SkateScene {
         this.opts.onHud({ bailed: true, score: Math.floor(this.score) });
         void this.bail.trigger(this.player, vel, this.opts.character, this.opts.ride);
       },
-      onGrindChange: (g) => this.opts.onHud({ grinding: g }),
+      onGrindChange: (g) => {
+        this.opts.onHud({ grinding: g });
+        if (g) {
+          this.grindStart = performance.now();
+        } else if (this.grindStart > 0) {
+          const dur = (performance.now() - this.grindStart) / 1000;
+          this.grindStart = 0;
+          // Quadratic bonus so longer grinds feel dramatically more rewarding:
+          // 1s = +10, 2s = +40, 3s = +90, 5s = +250.
+          if (dur > 0.3) {
+            const bonus = Math.round(10 * dur * dur);
+            this.score += bonus;
+            const label = dur > 2.5 ? "SICK GRIND" : dur > 1.2 ? "LONG GRIND" : "GRIND";
+            this.opts.onHud({ score: Math.floor(this.score), toast: { text: label, bonus, t: performance.now() } });
+          }
+        }
+        if (import.meta.env.DEV) {
+          const log = ((window as unknown as { __grindLog?: Array<{ t: number; on: boolean; pos: [number, number, number]; speed: number; tags: string[] }> }).__grindLog ??= []);
+          const pp = this.player.position;
+          log.push({ t: performance.now(), on: g, pos: [pp.x, pp.y, pp.z], speed: this.player.speed, tags: this.player.groundTags.slice() });
+          if (log.length > 1000) log.splice(0, 200);
+        }
+      },
     });
 
     onProgress?.("Teaching the AI to skate…");
@@ -129,6 +252,7 @@ export class SkateScene {
     if (this.disposed) return;
     this.ai.attach(this.player);
     this.player.driver = this.mode === "ai" ? "ai" : "manual";
+    if (import.meta.env.DEV) (window as unknown as { __aiDebug: AiNavigator["debug"] }).__aiDebug = this.ai.debug;
 
     this.camTarget.copyFrom(this.player.position);
     this.world.camera.setTarget(this.camTarget);

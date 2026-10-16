@@ -14,7 +14,7 @@ import { createWorld, type World } from "@/engine/world/createWorld";
 import { Park, gridToWorld, rotationY, worldToGrid } from "@/engine/world/park";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import { CATALOG_BY_ID } from "@/data/catalog";
-import { footprintCells, useGameStore } from "@/store/useGameStore";
+import { computeStackY, footprintCells, OUTER_PADDING, useGameStore } from "@/store/useGameStore";
 import type { PlacedItem, Rotation } from "@/types/game";
 
 /** Grid-based park builder: tap to place/erase, drag to orbit, long-press for dial. */
@@ -46,6 +46,10 @@ export class BuilderScene {
     const { scene } = this.world;
     this.park = new Park(this.world, map.size);
 
+    // Make the apron pickable so taps in the outer-ring area (where exterior pieces live)
+    // resolve to a world coord that worldToGrid can turn into a negative / past-size cell.
+    this.world.ground.apron.isPickable = true;
+
     this.cursor = CreateGround("cursor", { width: 1, height: 1 }, scene);
     this.cursor.position.y = 0.012;
     this.cursor.isPickable = false;
@@ -76,9 +80,9 @@ export class BuilderScene {
 
     this.unsub.push(
       useGameStore.subscribe((s, prev) => {
-        if (s.customMap.items !== prev.customMap.items) {
+        if (s.customMap.items !== prev.customMap.items || s.customMap.outerItems !== prev.customMap.outerItems) {
           this.emitPuffsForNewItems(s.customMap.items, map.size);
-          void this.park.sync(s.customMap.items).then(() => {
+          void this.park.sync(s.customMap.items, s.customMap.outerItems ?? []).then(() => {
             this.applyMovingVisibility(s.movingPieceUid);
             this.applyDialHighlight(s.activeDial?.uid ?? null);
             if (s.activeDial) this.repositionDialFor(s.activeDial.uid);
@@ -203,11 +207,22 @@ export class BuilderScene {
   private pickCell(): { x: number; z: number } | null {
     const { scene } = this.world;
     const size = this.park.gridSize;
-    const pick = scene.pick(scene.pointerX, scene.pointerY, (m: AbstractMesh) => m === this.world.ground.slab || m.metadata?.uid !== undefined);
+    const pick = scene.pick(scene.pointerX, scene.pointerY, (m: AbstractMesh) =>
+      m === this.world.ground.slab || m === this.world.ground.apron || m.metadata?.uid !== undefined,
+    );
     if (!pick?.hit || !pick.pickedPoint) return null;
     const p = pick.pickedPoint;
     const cell = worldToGrid(new Vector3(p.x, 0, p.z), size);
-    if (cell.x < 0 || cell.z < 0 || cell.x >= size || cell.z >= size) return null;
+    // Allow coords across the full outer ring too — the store's placeItem enforces
+    // zone rules (exteriors go outside, everything else inside).
+    if (
+      cell.x < -OUTER_PADDING ||
+      cell.z < -OUTER_PADDING ||
+      cell.x >= size + OUTER_PADDING ||
+      cell.z >= size + OUTER_PADDING
+    ) {
+      return null;
+    }
     return cell;
   }
 
@@ -242,7 +257,18 @@ export class BuilderScene {
 
   private isValid(cell: { x: number; z: number }, itemId: string, rot: Rotation): boolean {
     const size = this.park.gridSize;
-    return footprintCells(itemId, cell.x, cell.z, rot).every(([x, z]) => x >= 0 && z >= 0 && x < size && z < size);
+    const def = CATALOG_BY_ID[itemId];
+    const cells = footprintCells(itemId, cell.x, cell.z, rot);
+    if (def?.category === "exteriors") {
+      // Exteriors must fit in the outer ring AND stay fully outside the inner grid.
+      const inOuterBounds = cells.every(
+        ([x, z]) =>
+          x >= -OUTER_PADDING && z >= -OUTER_PADDING && x < size + OUTER_PADDING && z < size + OUTER_PADDING,
+      );
+      if (!inOuterBounds) return false;
+      return cells.every(([x, z]) => x < 0 || z < 0 || x >= size || z >= size);
+    }
+    return cells.every(([x, z]) => x >= 0 && z >= 0 && x < size && z < size);
   }
 
   private updateCursor() {
@@ -276,15 +302,23 @@ export class BuilderScene {
     const w = Math.max(...xs) - Math.min(...xs) + 1;
     const d = Math.max(...zs) - Math.min(...zs) + 1;
     const center = gridToWorld(itemId, cell.x, cell.z, rot, size);
+    // Resolve the stack Y the piece would land at so the preview sits where the real piece
+    // will — cursor + ghost both lifted onto the base's top surface.
+    const def = CATALOG_BY_ID[itemId];
+    const sourceArray = def?.category === "exteriors"
+      ? useGameStore.getState().customMap.outerItems ?? []
+      : useGameStore.getState().customMap.items;
+    const stackY = computeStackY(sourceArray, itemId, cell.x, cell.z, rot);
     this.cursor.setEnabled(true);
     this.cursor.scaling.set(w, 1, d);
     this.cursor.position.x = center.x;
     this.cursor.position.z = center.z;
+    this.cursor.position.y = stackY + 0.012;
     this.cursor.material = valid ? this.cursorOk : this.cursorBad;
     if (this.ghost) {
       this.ghost.root.setEnabled(true);
       this.ghost.root.position.copyFrom(center);
-      this.ghost.root.position.y = 0.02;
+      this.ghost.root.position.y = stackY + 0.02;
       this.ghost.root.rotation.y = rotationY(rot);
     }
   }
@@ -441,6 +475,46 @@ export class BuilderScene {
 
   setGridLines(show: boolean) {
     this.world.ground.setGridLines(show);
+  }
+
+  /**
+   * Captures a clean PNG snapshot of the current park: hides the cursor + ghost + grid lines,
+   * reframes the camera to a top-down iso angle that fits the whole park, renders two frames
+   * (so the first renders without the hidden elements), toDataURL, then restores everything.
+   * Used by the Builder when the user leaves so the Pick-a-park screen can show their creation.
+   */
+  async captureSnapshot(): Promise<string | null> {
+    if (this.disposed) return null;
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    const cam = this.world.camera;
+    const prev = { alpha: cam.alpha, beta: cam.beta, radius: cam.radius, target: cam.target.clone() };
+    const cursorWasOn = this.cursor.isEnabled();
+    const ghostWasOn = this.ghost?.root.isEnabled() ?? false;
+
+    this.cursor.setEnabled(false);
+    this.ghost?.root.setEnabled(false);
+    this.world.ground.setGridLines(false);
+    cam.alpha = -Math.PI / 4;
+    cam.beta = 0.9;
+    cam.radius = this.park.gridSize * 1.75;
+    cam.target.set(0, 0, 0);
+
+    try {
+      await this.world.scene.whenReadyAsync();
+      this.world.scene.render();
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      this.world.scene.render();
+      return canvas.toDataURL("image/png");
+    } finally {
+      cam.alpha = prev.alpha;
+      cam.beta = prev.beta;
+      cam.radius = prev.radius;
+      cam.target.copyFrom(prev.target);
+      this.cursor.setEnabled(cursorWasOn);
+      this.ghost?.root.setEnabled(ghostWasOn);
+      this.world.ground.setGridLines(true);
+    }
   }
 
   dispose() {
