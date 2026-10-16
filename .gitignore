@@ -5,3 +5,4 @@ dist
 *.tsbuildinfo
 vite.log
 last-probe.json
+last-probe-v2.json

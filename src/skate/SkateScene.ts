@@ -218,7 +218,15 @@ export class SkateScene {
         this.opts.onHud({ bailed: true, score: Math.floor(this.score) });
         void this.bail.trigger(this.player, vel, this.opts.character, this.opts.ride);
       },
-      onGrindChange: (g) => this.opts.onHud({ grinding: g }),
+      onGrindChange: (g) => {
+        this.opts.onHud({ grinding: g });
+        if (import.meta.env.DEV) {
+          const log = ((window as unknown as { __grindLog?: Array<{ t: number; on: boolean; pos: [number, number, number]; speed: number; tags: string[] }> }).__grindLog ??= []);
+          const pp = this.player.position;
+          log.push({ t: performance.now(), on: g, pos: [pp.x, pp.y, pp.z], speed: this.player.speed, tags: this.player.groundTags.slice() });
+          if (log.length > 1000) log.splice(0, 200);
+        }
+      },
     });
 
     onProgress?.("Teaching the AI to skate…");

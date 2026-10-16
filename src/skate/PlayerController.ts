@@ -340,41 +340,32 @@ export class PlayerController {
       newVel.z = dir.z * newAlong + perpZ * newPerp;
 
       if (this.railIsThin) {
-        // Lateral spring back to centerline (very stiff).
-        const dx = this.collider.position.x - this.railCenter.x;
-        const dz = this.collider.position.z - this.railCenter.z;
-        const latOff = dx * perpX + dz * perpZ;
-        const inCommit = this.grindLockTimer > 0;
-        const latAccel = -latOff * (inCommit ? 320 : 160);
-        newVel.x += perpX * latAccel * dt;
-        newVel.z += perpZ * latAccel * dt;
-        if (inCommit) {
-          // Hard-zero any residual perpendicular drift during the commitment window.
-          newVel.x -= perpX * newPerp;
-          newVel.z -= perpZ * newPerp;
-          // Also snap the collider back onto the centerline so we can't walk off sideways.
-          this.collider.position.x -= perpX * latOff;
-          this.collider.position.z -= perpZ * latOff;
-        }
-
-        // Y lock: pin the collider to the rail top. Prefer the AI-known rail Y when available
-        // (airRailTarget was set at jump time) because the raycast-sampled railCenter.y can
-        // oscillate on chamfered edges.
+        // While on a thin rail, hard-pin collider position directly. Havok defaults to
+        // disablePreStep=true (body authoritative), so transform writes are normally
+        // ignored. We flip it to false during grinding so pos writes propagate, and restore
+        // it when leaving the rail.
+        this.body.disablePreStep = false;
         const knownY = this.airRailTarget?.y;
         const yBase = typeof knownY === "number" ? knownY : this.railCenter.y;
         const yTarget = yBase + this.tuning.radius;
-        const yOff = this.collider.position.y - yTarget;
-        const yK = inCommit ? 120 : 50;
-        const yDamp = inCommit ? 24 : 10;
-        const yAccel = -yOff * yK - newVel.y * yDamp;
-        newVel.y += yAccel * dt;
-        if (newVel.y < 0 && yOff < 0.08) newVel.y = Math.max(newVel.y, 0);
-        if (inCommit) {
-          // Hard snap position + kill vy so the first frames of grinding can't bounce back off.
-          this.collider.position.y = yTarget;
-          newVel.y = 0;
-        }
+        const dx = this.collider.position.x - this.railCenter.x;
+        const dz = this.collider.position.z - this.railCenter.z;
+        const latOff = dx * perpX + dz * perpZ;
+        this.collider.position.x -= perpX * latOff;
+        this.collider.position.z -= perpZ * latOff;
+        this.collider.position.y = yTarget;
+        newVel.x = dir.x * newAlong;
+        newVel.z = dir.z * newAlong;
+        newVel.y = 0;
       }
+      // CRITICAL: the setLinearVelocity earlier in update() captured newVel BEFORE rail assist,
+      // so the along-clamp and perp-kill never actually reached the body. Push the updated
+      // newVel to the body again now that rail assist has finished.
+      this.body.setLinearVelocity(newVel);
+      this.lastVel.copyFrom(newVel);
+    } else if (!this.grounded || !this.groundTags.includes("rail")) {
+      // Left the rail: hand the body back to physics authority.
+      this.body.disablePreStep = true;
     }
 
     const hSpeed = Math.hypot(newVel.x, newVel.z);
