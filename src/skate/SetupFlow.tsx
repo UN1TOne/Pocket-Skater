@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import styled, { css } from "styled-components";
 import { useGameStore } from "@/store/useGameStore";
 import { PRESET_MAPS } from "@/data/presets";
@@ -6,6 +7,7 @@ import type { CharacterId, RideId } from "@/types/game";
 import { Button, Card, Chip, IconButton, Label, Row, Title, safeBottom, safeTop } from "@/ui/primitives";
 import { pop } from "@/styles/GlobalStyle";
 import { useThumbnail } from "@/engine/assets/useThumbnail";
+import { getMapThumbnailService } from "@/engine/assets/MapThumbnailService";
 
 const Wrap = styled.div<{ $translucent: boolean }>`
   position: absolute;
@@ -137,6 +139,14 @@ const MiniMap = styled.div`
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5);
 `;
 
+const RenderedThumb = styled.div<{ $src: string }>`
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 14px;
+  background: #8f88a9 url(${(p) => p.$src}) center / cover;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5);
+`;
+
 const Bottom = styled.div`
   margin-top: auto;
   padding-top: 14px;
@@ -158,10 +168,48 @@ function ModelThumb({ id }: { id: string }) {
   return url ? <img src={url} alt="" /> : <div style={{ width: "100%", aspectRatio: 1 }} />;
 }
 
-/** Top-down thumbnail of a map's layout, drawn from grid data. */
+/**
+ * Map thumbnail. For custom maps we use the Builder's captured PNG (lives on
+ * `customMap.thumbnail`). For presets we render once via MapThumbnailService and
+ * cache the result in memory for the session. Both fall back to a colored grid
+ * mini-preview on first paint before the real render is ready.
+ */
 function MapThumb({ mapId }: { mapId: string }) {
   const map = useGameStore((s) => s.getMap(mapId));
+  const customThumbnail = useGameStore((s) =>
+    mapId === "custom" ? s.customMap.thumbnail : undefined,
+  );
+  const customItemCount = useGameStore((s) => (mapId === "custom" ? s.customMap.items.length : 0));
+  const [renderedUrl, setRenderedUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!map || mapId === "custom") return;
+    let cancelled = false;
+    getMapThumbnailService()
+      .getThumbnail(map)
+      .then((url) => {
+        if (!cancelled) setRenderedUrl(url);
+      })
+      .catch(() => {
+        /* fall back to the mini grid */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [map, mapId]);
+
+  const url = mapId === "custom" ? customThumbnail : renderedUrl;
+  if (url) return <RenderedThumb $src={url} aria-label={map?.name ?? mapId} />;
+
   if (!map) return <MiniMap />;
+  // Empty custom map: show a hint instead of the colored grid so users know to build.
+  if (mapId === "custom" && customItemCount === 0) {
+    return (
+      <MiniMap style={{ placeItems: "center", color: "#2b2340", fontWeight: 700, fontSize: 11, lineHeight: 1.3, textAlign: "center", padding: 10 }}>
+        Build it in<br />the Builder
+      </MiniMap>
+    );
+  }
   const cells = new Map<string, string>();
   for (const it of map.items) {
     const color = it.itemId.startsWith("rail") ? "#4f8dff" : it.itemId.startsWith("bowl") || it.itemId.startsWith("half") ? "#ff8a3d" : it.itemId.startsWith("floor") ? "#b7b0cc" : "#ffd25a";

@@ -38,4 +38,10 @@ export interface MapData {
   /** Optional: a description shown on the map card. */
   blurb?: string;
   preset?: boolean;
+  /**
+   * Data-URL PNG thumbnail of this map. For custom maps this is captured by the
+   * Builder on exit; for presets it is generated at runtime by MapThumbnailService
+   * and cached in memory only (so we don't bloat the bundle).
+   */
+  thumbnail?: string;
 }

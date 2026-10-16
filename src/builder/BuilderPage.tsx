@@ -72,17 +72,19 @@ const Menu = styled(Card)`
 
 export function BuilderPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sceneRef = useRef<BuilderScene | null>(null);
   const [ready, setReady] = useState(false);
   const [menu, setMenu] = useState(false);
   const setPage = useGameStore((s) => s.setPage);
   const count = useGameStore((s) => s.customMap.items.length);
   const name = useGameStore((s) => s.customMap.name);
-  const { clearMap, loadPresetIntoBuilder, renameMap, setSetup, setSetupStep, rotateSelection, setBuilderTool } = useGameStore.getState();
+  const { clearMap, loadPresetIntoBuilder, renameMap, setSetup, setSetupStep, rotateSelection, setBuilderTool, setCustomThumbnail } = useGameStore.getState();
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const scene = new BuilderScene(canvas);
+    sceneRef.current = scene;
     let alive = true;
     scene
       .init()
@@ -97,11 +99,27 @@ export function BuilderPage() {
     window.addEventListener("builder:3d-interaction", closeMenu);
     return () => {
       alive = false;
+      sceneRef.current = null;
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("builder:3d-interaction", closeMenu);
       scene.dispose();
     };
   }, [rotateSelection, setBuilderTool]);
+
+  // Capture a thumbnail of the current park, then run the exit action. Non-blocking on
+  // failure so a snapshot bug can't trap users in the Builder.
+  const captureThenExit = async (next: () => void) => {
+    const scene = sceneRef.current;
+    if (scene && useGameStore.getState().customMap.items.length > 0) {
+      try {
+        const url = await scene.captureSnapshot();
+        if (url) setCustomThumbnail(url);
+      } catch (e) {
+        console.warn("Snapshot failed", e);
+      }
+    }
+    next();
+  };
 
   return (
     <>
@@ -109,7 +127,7 @@ export function BuilderPage() {
       {!ready && <Loading>Unpacking the toy box…</Loading>}
 
       <TopBar>
-        <IconButton onClick={() => setPage("landing")} aria-label="Back">
+        <IconButton onClick={() => captureThenExit(() => setPage("landing"))} aria-label="Back">
           ←
         </IconButton>
         <TitleCard>
@@ -148,11 +166,13 @@ export function BuilderPage() {
               $size="sm"
               style={{ flex: 1 }}
               disabled={count === 0}
-              onClick={() => {
-                setSetup({ mapId: "custom" });
-                setSetupStep(1);
-                setPage("skate");
-              }}
+              onClick={() =>
+                captureThenExit(() => {
+                  setSetup({ mapId: "custom" });
+                  setSetupStep(1);
+                  setPage("skate");
+                })
+              }
             >
               Skate it ▶
             </Button>

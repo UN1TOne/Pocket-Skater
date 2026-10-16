@@ -59,6 +59,7 @@ interface GameState {
   clearMap: () => void;
   loadPresetIntoBuilder: (presetId: string) => void;
   renameMap: (name: string) => void;
+  setCustomThumbnail: (dataUrl: string) => void;
   builderSheetOpen: boolean;
   setBuilderSheetOpen: (open: boolean) => void;
   floorFillPrompt: string | null;
@@ -242,10 +243,13 @@ export const useGameStore = create<GameState>()(
             ...get().customMap,
             size: preset.size,
             items: preset.items.map((it) => ({ ...it, uid: uid() })),
+            // The custom map is now a copy of the preset — the old captured thumb no longer matches.
+            thumbnail: undefined,
           },
         });
       },
       renameMap: (name) => set({ customMap: { ...get().customMap, name } }),
+      setCustomThumbnail: (dataUrl) => set({ customMap: { ...get().customMap, thumbnail: dataUrl } }),
 
       setup: { mapId: PRESET_MAPS[0].id, character: "character-skate-boy", ride: "skateboard", mode: "manual" },
       setSetup: (patch) => set((s) => ({ setup: { ...s.setup, ...patch } })),

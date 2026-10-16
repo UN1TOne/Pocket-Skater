@@ -443,6 +443,46 @@ export class BuilderScene {
     this.world.ground.setGridLines(show);
   }
 
+  /**
+   * Captures a clean PNG snapshot of the current park: hides the cursor + ghost + grid lines,
+   * reframes the camera to a top-down iso angle that fits the whole park, renders two frames
+   * (so the first renders without the hidden elements), toDataURL, then restores everything.
+   * Used by the Builder when the user leaves so the Pick-a-park screen can show their creation.
+   */
+  async captureSnapshot(): Promise<string | null> {
+    if (this.disposed) return null;
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    const cam = this.world.camera;
+    const prev = { alpha: cam.alpha, beta: cam.beta, radius: cam.radius, target: cam.target.clone() };
+    const cursorWasOn = this.cursor.isEnabled();
+    const ghostWasOn = this.ghost?.root.isEnabled() ?? false;
+
+    this.cursor.setEnabled(false);
+    this.ghost?.root.setEnabled(false);
+    this.world.ground.setGridLines(false);
+    cam.alpha = -Math.PI / 4;
+    cam.beta = 0.9;
+    cam.radius = this.park.gridSize * 1.75;
+    cam.target.set(0, 0, 0);
+
+    try {
+      await this.world.scene.whenReadyAsync();
+      this.world.scene.render();
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      this.world.scene.render();
+      return canvas.toDataURL("image/png");
+    } finally {
+      cam.alpha = prev.alpha;
+      cam.beta = prev.beta;
+      cam.radius = prev.radius;
+      cam.target.copyFrom(prev.target);
+      this.cursor.setEnabled(cursorWasOn);
+      this.ghost?.root.setEnabled(ghostWasOn);
+      this.world.ground.setGridLines(true);
+    }
+  }
+
   dispose() {
     this.disposed = true;
     window.removeEventListener("resize", this.onResize);
