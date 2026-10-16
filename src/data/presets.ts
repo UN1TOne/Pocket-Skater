@@ -131,91 +131,78 @@ const miniBowlOuter: PlacedItem[] = [
 ];
 
 /**
- * Street Studio — modeled on the Kenney asset-showcase reference image. Dense, center-
- * concentrated layout: a hero quarter-pipe wall on the north edge, triple bleacher row
- * below it, two parallel rail chains + a packed ledge/grind cluster through the middle,
- * a parked taxi flanked by pallets/planks, and south kickers + a south bowl roll-off.
- * Every piece category represented so the park reads as a showcase, not an empty grid.
+ * Kenny Park — hand-built Kenney-asset showcase. A low mini-bowl in the north-
+ * west corner, a mixed-height rail chain running west-east across the middle
+ * with a north-bound slope return, a central wood-floor plaza, a parked taxi,
+ * a half-pipe + ramp hero line along the north edge, and a dense grind-box
+ * cluster in the north-east. A single fence sits on top of the (3,2) platform.
  */
-const streetStudio: PlacedItem[] = [
-  // === NORTH: hero quarter-pipe wall (8 half-pipes + corner caps) ===
-  p("bowl-corner-outer", 2, 0, 0),
-  p("half-pipe", 3, 0, 0), p("half-pipe", 4, 0, 0), p("half-pipe", 5, 0, 0),
-  p("half-pipe", 6, 0, 0), p("half-pipe", 7, 0, 0), p("half-pipe", 8, 0, 0),
-  p("half-pipe", 9, 0, 0), p("half-pipe", 10, 0, 0),
-  p("bowl-corner-outer", 11, 0, 3),
+const kennyPark: PlacedItem[] = [
+  // Mid-south benches
+  p("benches", 5, 10, 2), p("benches", 6, 10, 2),
 
-  // === Row 1: ledge shelves flanking the vert ramp ===
-  p("structure-platform", 2, 1), p("structure-platform", 11, 1),
-  p("obstacle-middle", 4, 1, 1), p("obstacle-middle", 6, 1, 1),
-  p("obstacle-middle", 7, 1, 1), p("obstacle-middle", 9, 1, 1),
+  // South fence line
+  p("fence", 4, 13), p("fence", 5, 13), p("fence", 6, 13), p("fence", 7, 13),
 
-  // === Rows 2-3: Bleacher double row (benches + lone bench behind) ===
-  p("benches", 3, 2, 0), p("benches", 5, 2, 0), p("benches", 7, 2, 0), p("benches", 9, 2, 0),
-  p("bench", 3, 3, 0), p("bench", 5, 3, 0), p("bench", 7, 3, 0), p("bench", 9, 3, 0),
+  // Mid rail chain west → east along z=7
+  p("rail-high-curve", 3, 7, 1),
+  p("rail-high", 4, 7, 1), p("rail-high", 5, 7, 1),
+  p("rail-slope-smooth", 6, 7, 1),
+  p("rail-low", 7, 7, 1),
+  p("rail-low-end", 8, 7, 1),
+  // North-bound return at x=3
+  p("rail-slope", 3, 6, 2),
+  p("rail-low", 3, 5, 2),
+  p("rail-low-end", 3, 4, 2),
 
-  // === Row 4: approach grind-boxes (left + right pairs) ===
-  p("obstacle-box", 2, 4), p("obstacle-box-grind", 3, 4),
-  p("obstacle-box", 10, 4), p("obstacle-box-grind", 11, 4),
+  // North hero line: platform + half-pipe + steps + ramp
+  p("structure-platform", 3, 2, 3),
+  p("half-pipe", 4, 2, 1),
+  p("obstacle-box", 5, 0, 1),
+  p("steps-rail", 6, 2, 3),
+  p("obstacle-middle-rail", 7, 2, 1),
+  p("ramp", 8, 2, 1),
 
-  // === Rows 5-8: Two parallel low-rail chains PLUS center ledge cluster ===
-  // West rail chain
-  p("rail-low-end", 1, 5, 0),
-  p("rail-low", 1, 6, 0), p("rail-low", 1, 7, 0),
-  p("rail-low-end", 1, 8, 2),
-  // Center-west chain
-  p("rail-low-end", 4, 5, 0),
-  p("rail-low", 4, 6, 0), p("rail-low", 4, 7, 0),
-  p("rail-low-end", 4, 8, 2),
-  // Center-east chain
-  p("rail-low-end", 9, 5, 0),
-  p("rail-low", 9, 6, 0), p("rail-low", 9, 7, 0),
-  p("rail-low-end", 9, 8, 2),
-  // East column: high rails + slope
-  p("rail-high-curve", 12, 5, 0),
-  p("rail-high", 12, 6, 1),
-  p("rail-slope-smooth", 12, 7, 0),
+  // North-east grind-box cluster
+  p("obstacle-end", 10, 1, 3),
+  p("obstacle-middle-rail", 11, 1, 1),
+  p("obstacle-corner", 12, 1, 3),
+  p("obstacle-end", 12, 2, 0),
+  p("obstacle-box-grind", 11, 3, 1),
+  p("plank", 12, 3, 1),
+  p("obstacle-box-grind", 12, 4, 2),
 
-  // Center cluster (ledges + grind rails arranged like a fun-box)
-  p("obstacle-middle-rail", 6, 5, 1), p("obstacle-middle", 7, 5, 1),
-  p("obstacle-corner", 5, 6, 0),
-  p("obstacle-middle-rail", 6, 6, 1), p("obstacle-middle", 7, 6, 1),
-  p("obstacle-corner", 8, 6, 3),
-  p("obstacle-end", 5, 7, 2),
-  p("rail-curve", 6, 7, 0), p("rail-curve", 7, 7, 2),
-  p("obstacle-end", 8, 7, 0),
+  // Centre wood-floor plaza
+  p("floor-wood", 5, 5, 2), p("floor-wood", 6, 5, 2),
+  p("floor-wood", 5, 6, 2), p("floor-wood", 6, 6, 2),
 
-  // === Row 9: supplementary high rails ===
-  p("rail-high", 6, 9, 0), p("rail-high", 7, 9, 0),
+  // Taxi + mid-south lounge
+  p("vehicle", 9, 4, 1),
+  p("half-pipe-low", 9, 10, 2),
+  p("pallet", 11, 10, 1),
+  p("structure-wood-platform", 9, 11, 1),
+  p("slope-smooth", 10, 11, 1),
 
-  // === Row 10: VEHICLE + prop clutter (hero taxi in the middle) ===
-  p("pallet", 3, 10),
-  p("vehicle", 4, 10, 0),              // (4,10) + (5,10)
-  p("pallet", 7, 10), p("plank", 8, 10, 1),
-  p("plank", 10, 10, 1),
+  // North-west mini bowl (two heights)
+  p("bowl-side-low", 1, 8, 2), p("bowl-side-low", 2, 8, 2),
+  p("bowl-corner-inner-low", 1, 9),
+  p("bowl-corner-inner-low", 1, 10, 1),
+  p("bowl-corner-inner-low", 2, 10, 2),
+  p("bowl-side-low", 3, 10, 1),
+  p("bowl-corner-inner", 1, 11),
+  p("bowl-corner-inner", 1, 12, 1),
+  p("bowl-corner-inner", 2, 12, 2),
+  p("bowl-side", 3, 12, 1),
 
-  // === Row 11: south kickers + stairs sequence ===
-  p("ramp", 2, 11, 2),
-  p("steps", 4, 11, 2), p("steps", 5, 11, 2),
-  p("steps-rail", 7, 11, 2),
-  p("ramp-rail", 9, 11, 2),
-  p("ramp", 11, 11, 2),
+  // Corner benches
+  p("bench", 3, 1, 1), p("bench", 12, 8, 2),
 
-  // === Rows 12-13: south bowl roll-off ===
-  p("bowl-corner-outer", 2, 12, 2),
-  p("bowl-side-low", 3, 12, 0), p("bowl-side-low", 10, 12, 0),
-  p("bowl-corner-outer", 11, 12, 1),
-  p("bowl-side-low", 2, 13, 2), p("bowl-side-low", 11, 13, 2),
-
-  // === Framing props at the perimeter (fences + corner benches) ===
-  p("fence", 0, 1, 3), p("fence", 0, 2, 3), p("fence", 0, 3, 3),
-  p("fence", 13, 1, 1), p("fence", 13, 2, 1), p("fence", 13, 3, 1),
-  p("bench", 0, 6, 1), p("bench", 0, 9, 1),
-  p("bench", 13, 7, 3), p("bench", 13, 10, 3),
+  // Fence stacked on top of the (3,2) platform
+  { ...p("fence", 3, 2, 1), y: 0.8 },
 ];
 
-/** Street Studio decoration: urban park ringed by a wood fence with trees and planters outside. */
-const streetStudioOuter: PlacedItem[] = [
+/** Kenny Park decoration: urban park ringed by a wood fence with trees and planters outside. */
+const kennyParkOuter: PlacedItem[] = [
   // North: dense treeline + lookout silhouette behind the QP wall
   o("exterior-tree-high", 1, -1), o("exterior-tree", 3, -1), o("exterior-tree-high", 5, -1),
   o("exterior-tree", 7, -1), o("exterior-tree-high", 9, -1), o("exterior-tree", 11, -1),
@@ -260,12 +247,12 @@ export const PRESET_MAPS: MapData[] = [
     preset: true,
   },
   {
-    id: "preset-street-studio",
-    name: "Street Studio",
-    blurb: "Big quarter-pipe wall, long rail, grind-box cluster and a parked taxi.",
+    id: "preset-kenny-park",
+    name: "Kenny Park",
+    blurb: "Corner mini-bowl, mixed-height rail chain, wood plaza and a parked taxi.",
     size: 14,
-    items: streetStudio,
-    outerItems: streetStudioOuter,
+    items: kennyPark,
+    outerItems: kennyParkOuter,
     preset: true,
   },
 ];
