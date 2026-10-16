@@ -14,7 +14,7 @@ import { createWorld, type World } from "@/engine/world/createWorld";
 import { Park, gridToWorld, rotationY, worldToGrid } from "@/engine/world/park";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import { CATALOG_BY_ID } from "@/data/catalog";
-import { footprintCells, useGameStore } from "@/store/useGameStore";
+import { footprintCells, OUTER_PADDING, useGameStore } from "@/store/useGameStore";
 import type { PlacedItem, Rotation } from "@/types/game";
 
 /** Grid-based park builder: tap to place/erase, drag to orbit, long-press for dial. */
@@ -45,6 +45,10 @@ export class BuilderScene {
     this.world = createWorld(this.engine, { gridSize: map.size, showGridLines: true, orbitControls: true, quality: "high", visibleUnits: 7.5 });
     const { scene } = this.world;
     this.park = new Park(this.world, map.size);
+
+    // Make the apron pickable so taps in the outer-ring area (where exterior pieces live)
+    // resolve to a world coord that worldToGrid can turn into a negative / past-size cell.
+    this.world.ground.apron.isPickable = true;
 
     this.cursor = CreateGround("cursor", { width: 1, height: 1 }, scene);
     this.cursor.position.y = 0.012;
@@ -203,11 +207,22 @@ export class BuilderScene {
   private pickCell(): { x: number; z: number } | null {
     const { scene } = this.world;
     const size = this.park.gridSize;
-    const pick = scene.pick(scene.pointerX, scene.pointerY, (m: AbstractMesh) => m === this.world.ground.slab || m.metadata?.uid !== undefined);
+    const pick = scene.pick(scene.pointerX, scene.pointerY, (m: AbstractMesh) =>
+      m === this.world.ground.slab || m === this.world.ground.apron || m.metadata?.uid !== undefined,
+    );
     if (!pick?.hit || !pick.pickedPoint) return null;
     const p = pick.pickedPoint;
     const cell = worldToGrid(new Vector3(p.x, 0, p.z), size);
-    if (cell.x < 0 || cell.z < 0 || cell.x >= size || cell.z >= size) return null;
+    // Allow coords across the full outer ring too — the store's placeItem enforces
+    // zone rules (exteriors go outside, everything else inside).
+    if (
+      cell.x < -OUTER_PADDING ||
+      cell.z < -OUTER_PADDING ||
+      cell.x >= size + OUTER_PADDING ||
+      cell.z >= size + OUTER_PADDING
+    ) {
+      return null;
+    }
     return cell;
   }
 
@@ -242,7 +257,18 @@ export class BuilderScene {
 
   private isValid(cell: { x: number; z: number }, itemId: string, rot: Rotation): boolean {
     const size = this.park.gridSize;
-    return footprintCells(itemId, cell.x, cell.z, rot).every(([x, z]) => x >= 0 && z >= 0 && x < size && z < size);
+    const def = CATALOG_BY_ID[itemId];
+    const cells = footprintCells(itemId, cell.x, cell.z, rot);
+    if (def?.category === "exteriors") {
+      // Exteriors must fit in the outer ring AND stay fully outside the inner grid.
+      const inOuterBounds = cells.every(
+        ([x, z]) =>
+          x >= -OUTER_PADDING && z >= -OUTER_PADDING && x < size + OUTER_PADDING && z < size + OUTER_PADDING,
+      );
+      if (!inOuterBounds) return false;
+      return cells.every(([x, z]) => x < 0 || z < 0 || x >= size || z >= size);
+    }
+    return cells.every(([x, z]) => x >= 0 && z >= 0 && x < size && z < size);
   }
 
   private updateCursor() {

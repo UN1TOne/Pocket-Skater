@@ -58,16 +58,23 @@ export class Park {
   }
 
   async add(placed: PlacedItem): Promise<ParkPiece | null> {
-    if (!CATALOG_BY_ID[placed.itemId]) return null;
+    const def = CATALOG_BY_ID[placed.itemId];
+    if (!def) return null;
     const inst = await this.loader.instantiate(placed.itemId, `piece:${placed.uid}`);
     if (this.pieces.has(placed.uid)) {
       inst.dispose();
       return this.pieces.get(placed.uid)!;
     }
-    inst.root.position = gridToWorld(placed.itemId, placed.x, placed.z, placed.rot, this.gridSize);
+    const pos = gridToWorld(placed.itemId, placed.x, placed.z, placed.rot, this.gridSize);
+    // Exterior pieces live purely as decoration. Their bases sit at Y=0 by design, which
+    // puts them in the same plane as the slab (Y=0.002) and the apron, so a flat patch
+    // or a tree base z-fights with the ground. Lift them a hair above the slab so the
+    // depth test picks the piece's own geometry first.
+    if (def.category === "exteriors") pos.y = 0.02;
+    inst.root.position = pos;
     inst.root.rotation.y = rotationY(placed.rot);
-    inst.root.metadata = { ...inst.root.metadata, uid: placed.uid, tags: CATALOG_BY_ID[placed.itemId].tags };
-    for (const m of inst.meshes) m.metadata = { ...m.metadata, uid: placed.uid, tags: CATALOG_BY_ID[placed.itemId].tags };
+    inst.root.metadata = { ...inst.root.metadata, uid: placed.uid, tags: def.tags };
+    for (const m of inst.meshes) m.metadata = { ...m.metadata, uid: placed.uid, tags: def.tags };
     this.world.addShadowCaster(inst.root, true);
     const piece = { placed, instance: inst };
     this.pieces.set(placed.uid, piece);
