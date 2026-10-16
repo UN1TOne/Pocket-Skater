@@ -3,7 +3,10 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Dev serves at "/" for a clean localhost URL; production builds get the
+  // GitHub Pages project path so asset URLs resolve under un1tone.github.io/Pocket-Skater/.
+  base: command === "build" ? "/Pocket-Skater/" : "/",
   plugins: [react()],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
@@ -26,4 +29,4 @@ export default defineConfig({
     },
   },
   server: { host: true },
-});
+}));
