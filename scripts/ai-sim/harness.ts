@@ -26,13 +26,18 @@ import * as path from "node:path";
 import { PRESET_MAPS } from "@/data/presets";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import { gridToWorld, rotationY } from "@/engine/world/park";
+import { footprintCells } from "@/store/useGameStore";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import { PlayerController } from "@/skate/PlayerController";
 import { AiNavigator } from "@/skate/AiNavigator";
-import { buildPointsOfInterest, findSpawn, RespawnPlanner, type RawPiece } from "@/skate/parkLayout";
+import { findSpawn, RespawnPlanner, type RawPiece } from "@/skate/parkLayout";
+import { buildSpots, SPOT_MODEL_IDS, verifySpotGeometry } from "@/skate/spots";
+import type { MapData, Rotation } from "@/types/game";
 import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, airScore, grindBonus } from "@/skate/scoring";
 
 const DT = 1 / 60;
+/** Synthetic map with every spot model in all four rotations — geometry self-test only. */
+const CATALOG_MAP_ID = "__catalog__";
 /** Matches Bail.trigger's ragdoll timer: respawn fires this long after a bail. */
 const BAIL_RAGDOLL_SEC = 1.15;
 
@@ -58,6 +63,13 @@ export interface RunResult {
   /** Distinct grid cells visited / all cells. */
   coverage: number;
   ai: Record<string, number | string>;
+  spotStats: Record<string, { jumps: number; lands: number }>;
+  spotInfo: Record<string, string>;
+  /** Where bails happened + catalog ids within one cell — for diagnosing bail hotspots. */
+  bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }>;
+  longGrinds: Array<{ t: number; dur: number; items: string[]; path: number; end: number[] }>;
+  /** What the park analysis (src/skate/spots.ts) found; geometryMisses should be empty. */
+  spots: { grind: number; ramp: number; usable: number; entries: number; blockedEnds: number; longestLine: number; geometryMisses: string[] };
   wallMs: number;
 }
 
@@ -68,7 +80,7 @@ async function main() {
   const seed = Number(SEED_S);
   const seconds = Number(SECONDS_S);
   Math.random = mulberry32(seed);
-  const map = PRESET_MAPS.find((m) => m.id === MAP_ID);
+  const map = MAP_ID === CATALOG_MAP_ID ? catalogTestMap() : PRESET_MAPS.find((m) => m.id === MAP_ID);
   if (!map) throw new Error(`unknown map ${MAP_ID}`);
 
   const hk = await HavokPhysics({ wasmBinary: fs.readFileSync(path.join(ROOT, "node_modules/@babylonjs/havok/lib/esm/HavokPhysics.wasm")) } as never);
@@ -125,16 +137,24 @@ async function main() {
       const by = m.getBoundingInfo().boundingBox.maximumWorld.y;
       if (by > maxY) maxY = by;
     }
-    rawPieces.push({ x: placed.x, z: placed.z, rot: placed.rot, def, pos: gridToWorld(def.id, placed.x, placed.z, placed.rot, map.size), topY: maxY });
+    rawPieces.push({ uid: placed.uid, x: placed.x, z: placed.z, rot: placed.rot, def, pos: pos.clone(), topY: maxY });
     if (def.tags.some((t) => t === "rail" || t === "grind" || t === "ramp")) skateable.add(placed.uid);
   }
-  const pois = buildPointsOfInterest(rawPieces);
+  const physics = scene.getPhysicsEngine() as PhysicsEngine;
+  const spots = buildSpots(rawPieces, physics, map.size);
+  const geometryMisses = verifySpotGeometry(spots, physics);
 
   // --- Rider + AI ---
   let simTime = 0;
   let score = 0;
   let grindStartT = -1;
   let bailTimer = 0;
+  /** Grinds over 6 s: what was underfoot and how far the rider actually travelled. */
+  const longGrinds: Array<{ t: number; dur: number; items: string[]; path: number; end: number[] }> = [];
+  const grindItems = new Set<string>();
+  let grindPath = 0;
+  const itemOf = new Map(map.items.map((it) => [it.uid, it.itemId]));
+  const bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }> = [];
   const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, bails: 0, unsticks: 0, slowSec: 0 };
   const stub = (): Instance => ({ root: new TransformNode("stub", scene), meshes: [], animationGroups: [], dispose() {} });
   const player = new PlayerController(scene, stub(), stub(), "skateboard", findSpawn(map), {
@@ -146,19 +166,32 @@ async function main() {
         if (launchUid && skateable.has(launchUid)) used.add(launchUid);
       }
     },
-    onBail: () => {
+    onBail: (vel, point) => {
       score = Math.max(0, score - BAIL_PENALTY);
       m.bails += 1;
+      const cx = Math.floor(point.x + half);
+      const cz = Math.floor(point.z + half);
+      const near = map.items
+        .filter((it) => footprintCells(it.itemId, it.x, it.z, it.rot).some(([x, z]) => Math.abs(x - cx) <= 1 && Math.abs(z - cz) <= 1))
+        .map((it) => it.itemId);
+      bailSites.push({ t: Math.round(simTime * 10) / 10, x: +point.x.toFixed(2), z: +point.z.toFixed(2), speed: +Math.hypot(vel.x, vel.z).toFixed(2), phase: String(ai.debug.lastPhase), near: [...new Set(near)] });
       bailTimer = BAIL_RAGDOLL_SEC;
     },
     onGrindChange: (g) => {
       if (g) grindStartT = simTime;
       else if (grindStartT >= 0) {
         const dur = simTime - grindStartT;
+        const startedAt = grindStartT;
         grindStartT = -1;
         score += grindBonus(dur);
         m.grinds += 1;
         m.longestGrind = Math.max(m.longestGrind, dur);
+        if (dur > 6) {
+          const p = player.position;
+          longGrinds.push({ t: +startedAt.toFixed(1), dur: +dur.toFixed(1), items: [...grindItems], path: +grindPath.toFixed(1), end: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)] });
+        }
+        grindItems.clear();
+        grindPath = 0;
       }
     },
   });
@@ -167,7 +200,7 @@ async function main() {
     m.unsticks += 1;
     unstick();
   };
-  const ai = new AiNavigator(scene, pois, half);
+  const ai = new AiNavigator(scene, spots, half);
   await ai.bake(staticMeshes);
   if (!ai.usingNavMesh) throw new Error("navmesh bake failed — results would not match the game");
   ai.attach(player);
@@ -177,7 +210,6 @@ async function main() {
   // --- Metrics probes ---
   const used = new Set<string>();
   const under = new PhysicsRaycastResult();
-  const physics = scene.getPhysicsEngine() as PhysicsEngine;
   let groundUid: string | null = null;
   let launchUid: string | null = null;
   let wasGrounded = false;
@@ -199,6 +231,7 @@ async function main() {
     }
   });
 
+  const [traceFrom, traceTo] = (process.env.AI_SIM_TRACE ?? "-1--1").split("-").map(Number);
   const frames = Math.round(seconds / DT);
   for (let f = 0; f < frames; f++) {
     scene.render();
@@ -217,8 +250,15 @@ async function main() {
     }
     if (wasGrounded && !player.grounded) launchUid = groundUid;
     wasGrounded = player.grounded;
+    if (traceFrom >= 0 && simTime >= traceFrom && simTime <= traceTo) {
+      const v = player.body.getLinearVelocity();
+      const rd = player["railDir"] as Vector3 | null;
+      process.stderr.write(`t=${simTime.toFixed(3)} ${player.state.padEnd(8)} g=${player.grounded ? 1 : 0} p=(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}) v=(${v.x.toFixed(2)},${v.y.toFixed(2)},${v.z.toFixed(2)}) tags=${player.groundTags.join("/")} under=${groundUid ? itemOf.get(groundUid) : "-"} rail=${rd ? `(${rd.x.toFixed(2)},${rd.z.toFixed(2)})` : "-"} ai=${ai.debug.lastPhase} mv=(${player.moveDir.x.toFixed(2)},${player.moveDir.z.toFixed(2)}) guard=${player["railTracking"] ? 1 : 0}/${(player["railWindow"] as number).toFixed(2)}/${(player["railExpected"] as number).toFixed(3)}/${(player["railReleaseTimer"] as number).toFixed(2)}/${(player["railLastAlong"] as number).toFixed(2)}\n`);
+    }
     if (player.state === "grinding") {
       m.grindSec += DT;
+      grindPath += player.speed * DT;
+      if (groundUid) grindItems.add(itemOf.get(groundUid) ?? groundUid);
       if (groundUid && skateable.has(groundUid)) used.add(groundUid);
     }
   }
@@ -244,6 +284,19 @@ async function main() {
     hotspotShare: hot / totalCellTime,
     coverage: cellTime.filter((t) => t > 0).length / cellTime.length,
     ai: { ...ai.debug },
+    spotStats: Object.fromEntries(ai.spotStats),
+    spotInfo: Object.fromEntries(spots.map((s) => [s.id, `${s.pieces.map((u) => itemOf.get(u)).join('+')} len=${s.length.toFixed(1)} h=${s.height.toFixed(2)} entries=${s.entries.map((e) => `(${e.start.x.toFixed(1)},${e.start.z.toFixed(1)})→(${e.end.x.toFixed(1)},${e.end.z.toFixed(1)})`).join(' ')}`])),
+    bailSites,
+    longGrinds,
+    spots: {
+      grind: spots.filter((s) => s.kind === "grind").length,
+      ramp: spots.filter((s) => s.kind === "ramp").length,
+      usable: spots.filter((s) => s.entries.length > 0).length,
+      entries: spots.reduce((a, s) => a + s.entries.length, 0),
+      blockedEnds: spots.reduce((a, s) => a + s.rejected, 0),
+      longestLine: Math.max(0, ...spots.map((s) => s.length)),
+      geometryMisses: geometryMisses.map((g) => `${g.spot} @(${g.point.x.toFixed(2)},${g.point.y.toFixed(2)},${g.point.z.toFixed(2)}) hit=${g.hitY?.toFixed(2) ?? "none"}`),
+    },
     wallMs: Date.now() - t0,
   };
   process.stdout.write("RESULT " + JSON.stringify(result) + "\n");
@@ -295,6 +348,20 @@ function loadGlbMeshes(scene: Scene, id: string): Mesh[] {
     vd.applyToMesh(mesh);
     return mesh;
   });
+}
+
+function catalogTestMap(): MapData {
+  const size = 32;
+  const items: MapData["items"] = [];
+  let i = 0;
+  for (const itemId of SPOT_MODEL_IDS) {
+    for (const rot of [0, 1, 2, 3] as Rotation[]) {
+      // 3-cell spacing keeps pieces from touching, so every line stays a single piece.
+      items.push({ uid: `c${i}`, itemId, x: 1 + (i % 10) * 3, z: 1 + Math.floor(i / 10) * 3, rot });
+      i++;
+    }
+  }
+  return { id: CATALOG_MAP_ID, name: "Catalog", size, items };
 }
 
 function mulberry32(a: number): () => number {

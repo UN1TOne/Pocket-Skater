@@ -3,16 +3,18 @@ import { PhysicsShapeType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugi
 import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { PhysicsEngine } from "@babylonjs/core/Physics/v2/physicsEngine";
 import type { Engine } from "@babylonjs/core/Engines/engine";
 import { createEngine, enableHavok } from "@/engine/createEngine";
 import { createWorld, type World } from "@/engine/world/createWorld";
-import { Park, gridToWorld } from "@/engine/world/park";
+import { Park } from "@/engine/world/park";
 import { gameInput } from "@/engine/input";
 import { Sfx } from "@/engine/audio/Sfx";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import type { GameHud } from "@/store/useGameStore";
 import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, airScore, grindBonus, grindLabel } from "./scoring";
-import { buildPointsOfInterest, findSpawn, RespawnPlanner, type RawPiece } from "./parkLayout";
+import { findSpawn, RespawnPlanner, type RawPiece } from "./parkLayout";
+import { buildSpots } from "./spots";
 import type { CharacterId, MapData, PlayMode, RideId } from "@/types/game";
 import { PlayerController } from "./PlayerController";
 import { AiNavigator } from "./AiNavigator";
@@ -104,11 +106,10 @@ export class SkateScene {
         const by = m.getBoundingInfo().boundingBox.maximumWorld.y;
         if (by > maxY) maxY = by;
       }
-      const p = gridToWorld(def.id, piece.placed.x, piece.placed.z, piece.placed.rot, map.size);
-      rawPieces.push({ x: piece.placed.x, z: piece.placed.z, rot: piece.placed.rot, def, pos: p, topY: maxY });
+      rawPieces.push({ uid: piece.placed.uid, x: piece.placed.x, z: piece.placed.z, rot: piece.placed.rot, def, pos: piece.instance.root.position.clone(), topY: maxY });
     }
 
-    const pois = buildPointsOfInterest(rawPieces);
+    const spots = buildSpots(rawPieces, scene.getPhysicsEngine() as PhysicsEngine, map.size);
 
     onProgress?.("Lacing up…");
     const spawn = findSpawn(map);
@@ -162,12 +163,12 @@ export class SkateScene {
     });
 
     onProgress?.("Teaching the AI to skate…");
-    this.ai = new AiNavigator(scene, pois, half);
+    this.ai = new AiNavigator(scene, spots, half);
     await this.ai.bake(staticMeshes);
     if (this.disposed) return;
     this.ai.attach(this.player);
     this.player.driver = this.mode === "ai" ? "ai" : "manual";
-    if (import.meta.env.DEV) (window as unknown as { __aiDebug: AiNavigator["debug"] }).__aiDebug = this.ai.debug;
+    if (import.meta.env.DEV) Object.assign(window, { __aiDebug: this.ai.debug, __spots: spots });
 
     this.camTarget.copyFrom(this.player.position);
     this.world.camera.setTarget(this.camTarget);

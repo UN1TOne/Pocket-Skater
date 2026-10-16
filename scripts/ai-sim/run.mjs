@@ -3,6 +3,7 @@
 //
 //   npm run sim:ai -- [--seconds 180] [--seeds 3] [--maps preset-kenny-park,...] [--jobs 4]
 //                     [--label name] [--save-baseline]
+//   npm run sim:ai -- --check-geometry      (spot table vs meshes self-test only)
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -23,6 +24,14 @@ const jobs = Number(args.jobs ?? Math.max(1, Math.min(6, os.cpus().length - 1)))
 const label = args.label ?? new Date().toISOString().replace(/[:.]/g, "-");
 
 const harness = await bundle();
+if (args["check-geometry"]) {
+  // Every spot model × 4 rotations on a synthetic map: the GRIND_LINES / RAMPS tables must
+  // match the meshes, or the AI aims at air. Also runs automatically after every eval.
+  const r = await runOne({ map: "__catalog__", seed: 1 }, 0);
+  if (r.error) throw new Error(r.error);
+  report(r);
+  process.exit(r.spots.geometryMisses.length ? 1 : 0);
+}
 const { PRESET_IDS } = await import(pathToUrl(harness.replace(/harness\.mjs$/, "presets.mjs")));
 const maps = args.maps ? String(args.maps).split(",") : PRESET_IDS;
 
@@ -35,6 +44,9 @@ for (const f of failed) console.error(`\n[FAIL] ${f.map} seed ${f.seed}\n${f.err
 const ok = runs.filter((r) => !r.error);
 if (!ok.length) process.exit(1);
 
+const geom = await runOne({ map: "__catalog__", seed: 1 }, 0);
+if (geom.error) console.error(geom.error);
+else report(geom);
 const summary = summarize(ok);
 const baseline = fs.existsSync(BASELINE) && !args["save-baseline"] ? JSON.parse(fs.readFileSync(BASELINE, "utf8")) : null;
 printTable(summary, baseline);
@@ -87,9 +99,15 @@ async function bundle() {
   return path.join(BUILD, "harness.mjs");
 }
 
-function runOne({ map, seed }) {
+function report(r) {
+  const m = r.spots.geometryMisses;
+  console.log(`geometry self-test (${r.spots.grind} lines, ${r.spots.ramp} ramps): ${m.length ? m.length + " MISSES" : "ok"}`);
+  for (const x of m) console.log("  " + x);
+}
+
+function runOne({ map, seed }, secs = seconds) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [harness, ROOT, map, String(seed), String(seconds)], { cwd: ROOT });
+    const child = spawn(process.execPath, [harness, ROOT, map, String(seed), String(secs)], { cwd: ROOT });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));

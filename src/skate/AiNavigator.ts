@@ -7,38 +7,28 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { PlayerController } from "./PlayerController";
-
-export interface PointOfInterest {
-  position: Vector3;
-  kind: "ramp" | "grind" | "open";
-  /** World-space long axis for grind pieces, so the AI can target an end instead of the middle. */
-  axis?: Vector3;
-  /** Along-axis length of the piece in world units. Used to compute endpoints for grinds. */
-  length?: number;
-  /** World Y of the ridable top surface. Lets the AI know the apex it needs to clear. */
-  topY?: number;
-  /** True thin rail (rail-*) vs flat grind ledge (obstacle-*). Thin rails need stricter approach. */
-  thin?: boolean;
-}
+import type { Spot, SpotEntry } from "./spots";
 
 /**
- * Plan for landing on a rail. The AI walks the state machine:
- *   nav → lineup → air → grind.
+ * Plan for hitting a spot through one of its checked entries. The AI walks the state machine:
+ *   nav → lineup → air → grind   (grind spots: jump onto the line)
+ *   nav → lineup → air           (ramps: ride up the transition, no jump)
  * Each phase has a hard timeout so a failed attempt eventually picks a new target.
  */
 interface RailPlan {
-  poi: PointOfInterest;
+  spot: Spot;
+  entry: SpotEntry;
   /** Rail endpoint the AI will jump ONTO (world space, NOT navmesh-snapped). */
   endNear: Vector3;
-  /** Opposite endpoint — used as a soft exit aim once grinding. */
+  /** Far end of the line (grind) / top of the ramp. */
   endFar: Vector3;
-  /** Lineup point outside the rail, along the axis, on the floor. AI steers here first. */
+  /** Run-up start on the floor. AI navigates here first. */
   approach: Vector3;
-  /** Unit XZ vector pointing from approach toward endNear (i.e. "into the rail"). */
+  /** Unit XZ run-up heading, from approach toward endNear. */
   axisInward: Vector3;
-  /** Unit XZ vector along the rail from endNear → endFar. */
+  /** Unit XZ heading at the start of the ride. */
   axisAlong: Vector3;
-  /** Target the AI aims for while airborne (XZ center + rail-top Y). */
+  /** Landing point the AI aims for while airborne (XZ + rail-top Y). */
   airAim: Vector3;
   phase: "nav" | "lineup" | "air" | "grind";
   phaseTimer: number;
@@ -75,6 +65,13 @@ export class AiNavigator {
   usingNavMesh = false;
 
   debugMesh: Mesh | null = null;
+  /** Per-spot outcomes (jumps tried / landed). Diagnostics now; success-rate input later. */
+  readonly spotStats = new Map<string, { jumps: number; lands: number }>();
+  private stat(spot: Spot) {
+    let st = this.spotStats.get(spot.id);
+    if (!st) this.spotStats.set(spot.id, (st = { jumps: 0, lands: 0 }));
+    return st;
+  }
   /** DEV-mode counters for diagnosing the rail-approach pipeline. */
   readonly debug = {
     plans: 0,
@@ -84,6 +81,8 @@ export class AiNavigator {
     airMiss: 0,
     airTimeout: 0,
     lineupTimeout: 0,
+    rampPlans: 0,
+    rampAirs: 0,
     bailed: 0,
     lastPhase: "idle" as "idle" | "nav" | "lineup" | "air" | "grind",
     lastEndNearDist: 0,
@@ -93,7 +92,7 @@ export class AiNavigator {
 
   constructor(
     private scene: Scene,
-    private pois: PointOfInterest[],
+    private spots: Spot[],
     private halfExtent: number,
   ) {
     this.physics = scene.getPhysicsEngine() as PhysicsEngine;
@@ -152,44 +151,26 @@ export class AiNavigator {
     this.pickTarget(ctrl.position);
   }
 
-  /** Builds a rail-attack plan for `poi` from the AI's current position. */
-  private buildRailPlan(poi: PointOfInterest, from: Vector3): RailPlan | null {
-    if (!poi.axis) return null;
-    const axis = new Vector3(poi.axis.x, 0, poi.axis.z);
-    const axisLen = Math.hypot(axis.x, axis.z);
-    if (axisLen < 1e-3) return null;
-    axis.scaleInPlace(1 / axisLen);
-    const half = Math.max(0.45, (poi.length ?? 1) * 0.5 - 0.05);
-    const end1 = poi.position.add(axis.scale(half));
-    const end2 = poi.position.subtract(axis.scale(half));
-    // The "near" end is the one closer to the AI — that's what we'll jump onto.
-    const useEnd1 = Vector3.Distance(from, end1) < Vector3.Distance(from, end2);
-    const endNear = (useEnd1 ? end1 : end2).clone();
-    const endFar = (useEnd1 ? end2 : end1).clone();
-    // Unit vec from endNear → endFar (the ride direction once grinding).
-    const axisAlong = endFar.subtract(endNear);
-    axisAlong.y = 0;
-    const alongLen = Math.hypot(axisAlong.x, axisAlong.z);
-    if (alongLen > 1e-3) axisAlong.scaleInPlace(1 / alongLen);
-    // axisInward points INTO the rail (approach → endNear) = -axisAlong extended out from endNear.
-    // We want the AI to approach from BEHIND endNear along the rail axis, so axisInward = axisAlong.
-    const axisInward = axisAlong.clone();
-    // Lineup point: step back from endNear by `approachDist` AGAINST axisInward (so the AI is
-    // behind the rail along its length and will run forward along the axis).
-    const approachDist = 2.4;
-    const approach = endNear.subtract(axisInward.scale(approachDist));
+  /**
+   * Plan for `spot` through its nearest entry the AI can actually drive to from here — a run-up
+   * inside a walled bowl is unreachable from outside it (and vice versa).
+   */
+  private buildRailPlan(spot: Spot, from: Vector3): RailPlan | null {
+    const byDistance = [...spot.entries].sort((a, b) => Vector3.Distance(from, a.start) - Vector3.Distance(from, b.start));
+    const entry = byDistance.find((e) => this.reachable(from, e.start));
+    if (!entry) return null;
+    const approach = entry.start.clone();
     approach.y = Math.max(0.1, from.y);
-    // Air aim: ride-plane point slightly past endNear so the magnet pulls onto the rail top.
-    const topY = poi.topY ?? 0.4;
-    const airAim = endNear.add(axisAlong.scale(0.2));
-    airAim.y = topY;
+    const airAim = entry.target.clone();
+    airAim.y = entry.topY;
     return {
-      poi,
-      endNear,
-      endFar,
+      spot,
+      entry,
+      endNear: entry.end.clone(),
+      endFar: entry.exit.clone(),
       approach,
-      axisInward,
-      axisAlong,
+      axisInward: entry.dir.clone(),
+      axisAlong: entry.dir.clone(),
       airAim,
       phase: "nav",
       phaseTimer: 0,
@@ -197,45 +178,53 @@ export class AiNavigator {
     };
   }
 
+  /** Navmesh path from `from` really ends at `to` (not just at the closest reachable point). */
+  private reachable(from: Vector3, to: Vector3): boolean {
+    if (!this.plugin) return true;
+    const goal = this.plugin.getClosestPoint(to);
+    if (Math.hypot(goal.x - to.x, goal.z - to.z) > 0.4) return false;
+    const path = this.plugin.computePath(this.plugin.getClosestPoint(from), goal);
+    if (path.length === 0) return false;
+    const last = path[path.length - 1];
+    return Math.hypot(last.x - goal.x, last.z - goal.z) < 0.3;
+  }
+
   private pickTarget(from: Vector3) {
     // Discard any in-flight rail plan when picking a fresh target.
     this.rail = null;
-    const grinds = this.pois.filter((p) => p.kind === "grind");
-    const nonGrindOpen = this.pois.filter((p) => p.kind !== "open");
+    const grinds = this.spots.filter((s) => s.kind === "grind" && s.entries.length > 0);
+    const ramps = this.spots.filter((s) => s.kind === "ramp" && s.entries.length > 0);
     // Strongly bias toward grind pieces so we actually attempt scoring runs.
     const wantGrind = grinds.length > 0 && Math.random() < 0.85;
-    if (wantGrind) {
-      const poi = this.pickWeighted(grinds, from);
-      if (poi) {
-        const plan = this.buildRailPlan(poi, from);
-        if (plan) {
-          this.rail = plan;
-          this.debug.plans += 1;
-          this.target = plan.approach.clone();
-          this.targetTimer = 0;
-          this.stuckTimer = 0;
-          if (this.crowd && this.agent >= 0 && this.plugin) {
-            // The approach point is on the floor beside the rail — safe to snap to navmesh.
-            const snapped = this.plugin.getClosestPoint(plan.approach);
-            if (snapped.lengthSquared() > 0) this.crowd.agentGoto(this.agent, snapped);
-            else this.crowd.agentGoto(this.agent, plan.approach);
-          }
-          return;
-        }
+    const pool = wantGrind ? grinds : Math.random() < 0.95 ? ramps : [];
+    // A few tries: the picked spot may have no entry reachable from where we are.
+    const tried = new Set<Spot>();
+    for (let attempt = 0; attempt < 4 && tried.size < pool.length; attempt++) {
+      const spot = this.pickWeighted(pool.filter((p) => !tried.has(p)), from);
+      if (!spot) break;
+      tried.add(spot);
+      const plan = this.buildRailPlan(spot, from);
+      if (!plan) continue;
+      this.rail = plan;
+      if (spot.kind === "ramp") this.debug.rampPlans += 1;
+      else this.debug.plans += 1;
+      this.target = plan.approach.clone();
+      this.targetTimer = 0;
+      this.stuckTimer = 0;
+      if (this.crowd && this.agent >= 0 && this.plugin) {
+        // The approach point is on the floor beside the rail — safe to snap to navmesh.
+        const snapped = this.plugin.getClosestPoint(plan.approach);
+        if (snapped.lengthSquared() > 0) this.crowd.agentGoto(this.agent, snapped);
+        else this.crowd.agentGoto(this.agent, plan.approach);
       }
+      return;
     }
-    // Fallback: ramp or roam.
-    let dest: Vector3;
-    if (nonGrindOpen.length > 0 && Math.random() < 0.95) {
-      const poi = this.pickWeighted(nonGrindOpen, from) ?? nonGrindOpen[0];
-      dest = poi.position.clone();
-    } else {
-      dest = new Vector3(
-        (Math.random() * 2 - 1) * (this.halfExtent - 1.2),
-        0,
-        (Math.random() * 2 - 1) * (this.halfExtent - 1.2),
-      );
-    }
+    // Fallback: roam.
+    let dest = new Vector3(
+      (Math.random() * 2 - 1) * (this.halfExtent - 1.2),
+      0,
+      (Math.random() * 2 - 1) * (this.halfExtent - 1.2),
+    );
     if (this.plugin) {
       const snapped = this.plugin.getClosestPoint(dest);
       if (snapped.lengthSquared() > 0) dest = snapped;
@@ -246,17 +235,17 @@ export class AiNavigator {
     if (this.crowd && this.agent >= 0) this.crowd.agentGoto(this.agent, dest);
   }
 
-  private pickWeighted(pool: PointOfInterest[], from: Vector3): PointOfInterest | null {
+  private pickWeighted(pool: Spot[], from: Vector3): Spot | null {
     if (pool.length === 0) return null;
     // Prefer long thin-rail chains strongly — those are the ones with real sustained grinds.
     // Distance sweet-spot is wider now; being too picky caused the AI to burn plans on
     // whatever happened to be 4m away.
     const scored = pool
       .map((p) => {
-        const d = Vector3.Distance(p.position, from);
+        const d = Vector3.Distance(p.center, from);
         const sweet = Math.max(0.2, 1 - Math.abs(d - 4) / 7);
         const thinBonus = p.thin ? 3.5 : 1;
-        const lengthBonus = 1 + Math.max(0, (p.length ?? 1) - 1) * 1.2;
+        const lengthBonus = 1 + Math.max(0, p.length - 1) * 1.2;
         return { p, w: sweet * thinBonus * lengthBonus };
       })
       .sort((a, b) => b.w - a.w);
@@ -321,9 +310,37 @@ export class AiNavigator {
       return;
     }
 
+    if (plan.phase === "lineup" && plan.spot.kind === "ramp") {
+      // Ride straight up the transition; the ramp does the launching.
+      if (!ctrl.grounded && plan.phaseTimer > 0.1) {
+        plan.phase = "air";
+        plan.phaseTimer = 0;
+        this.debug.lastPhase = "air";
+      } else if (plan.phaseTimer > 3 || (plan.phaseTimer > 0.7 && ctrl.speed < 0.6)) {
+        this.debug.lineupTimeout += 1;
+        this.pickTarget(pos);
+      }
+      return;
+    }
+
+    if (plan.phase === "air" && plan.spot.kind === "ramp") {
+      if (state === "bailed") {
+        this.debug.bailed += 1;
+        return;
+      }
+      if (ctrl.grounded && plan.phaseTimer > 0.15) {
+        this.debug.rampAirs += 1;
+        this.stat(plan.spot).lands += 1;
+        this.pickTarget(pos);
+      } else if (plan.phaseTimer > 3) {
+        this.pickTarget(pos);
+      }
+      return;
+    }
+
     if (plan.phase === "lineup") {
       const g = 10;
-      const topY = plan.poi.topY ?? 0.4;
+      const topY = plan.entry.topY;
       const rise = Math.max(0.25, topY - 0.24 + 0.18);
       const jumpSpeed = Math.min(5.0, Math.sqrt(2 * g * rise));
       const timeToApex = jumpSpeed / g;
@@ -335,14 +352,20 @@ export class AiNavigator {
       const toEnd = plan.endNear.subtract(pos);
       toEnd.y = 0;
       const distAlong = toEnd.x * plan.axisInward.x + toEnd.z * plan.axisInward.z;
-      const align = ctrl.moveDir.x * plan.axisInward.x + ctrl.moveDir.z * plan.axisInward.z;
+      // Gate on where we're actually going, not on input: arriving at the run-up from the wrong
+      // side means a U-turn, and jumping mid-turn sends the rider diagonally past the rail.
+      const v = ctrl.body.getLinearVelocity();
+      const vh = Math.max(1e-3, Math.hypot(v.x, v.z));
+      const align = (v.x * plan.axisInward.x + v.z * plan.axisInward.z) / vh;
+      const lateral = Math.abs(toEnd.x * plan.axisInward.z - toEnd.z * plan.axisInward.x);
       const canJump =
         ctrl.grounded &&
         this.jumpCooldown <= 0 &&
         ctrl.speed > 1.6 &&
         distAlong > 0 &&
         distAlong < jumpAhead &&
-        align > 0.55;
+        align > 0.85 &&
+        lateral < 0.3;
       this.debug.lastEndNearDist = distAlong;
       if (canJump) {
         ctrl.requestJump(jumpSpeed);
@@ -357,6 +380,7 @@ export class AiNavigator {
         plan.phase = "air";
         plan.phaseTimer = 0;
         this.debug.jumpsFired += 1;
+        this.stat(plan.spot).jumps += 1;
         this.debug.lastPhase = "air";
         this.debug.lastJumpSpeed = jumpSpeed;
         this.debug.lastRailTopY = topY;
@@ -387,6 +411,7 @@ export class AiNavigator {
         // Keep airRailTarget set during grinding too — the controller's Y lock prefers this
         // over raycast-sampled railCenter.y which can oscillate on chamfered rail edges.
         this.debug.airSuccess += 1;
+        this.stat(plan.spot).lands += 1;
         this.debug.lastPhase = "grind";
         return;
       }
@@ -447,14 +472,22 @@ export class AiNavigator {
       steer = new Vector3(plan.axisInward.x, 0, plan.axisInward.z);
       distToGoal = Vector3.Distance(pos, plan.endNear);
       targetThrottle = 1; // full gas into the rail
+    } else if (plan.phase === "air" && plan.spot.kind === "ramp") {
+      // Off a ramp: don't fight the trajectory — keep pushing the way we're already going.
+      steer = new Vector3(this.smoothSteer.x, 0, this.smoothSteer.z);
+      distToGoal = 2;
+      targetThrottle = 0.9;
     } else if (plan.phase === "air") {
       // Carry momentum toward the rail center in XZ.
       steer = new Vector3(plan.airAim.x - pos.x, 0, plan.airAim.z - pos.z);
       distToGoal = 2;
       targetThrottle = 0.9;
     } else {
-      // phase === "grind": nudge forward along the rail; physics clamp handles the rest.
-      steer = new Vector3(plan.axisAlong.x, 0, plan.axisAlong.z);
+      // phase === "grind": push along our actual travel direction so curved / bent lines don't
+      // get steered back toward the entry heading; physics clamps us to the rail.
+      const v = ctrl.body.getLinearVelocity();
+      const vh = Math.hypot(v.x, v.z);
+      steer = vh > 0.5 ? new Vector3(v.x / vh, 0, v.z / vh) : new Vector3(plan.axisAlong.x, 0, plan.axisAlong.z);
       distToGoal = Vector3.Distance(pos, plan.endFar);
       targetThrottle = 1;
     }
