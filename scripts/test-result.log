@@ -1,0 +1,184 @@
+﻿[test] Opening landing…
+[test] Entering builder…
+[test] Builder tiles: [
+  {
+    label: 'Kicker',
+    isDataUrl: true,
+    srcLen: 25434,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Kicker + Rail',
+    isDataUrl: true,
+    srcLen: 28622,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Quarter Pipe',
+    isDataUrl: true,
+    srcLen: 26938,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Low Quarter',
+    isDataUrl: true,
+    srcLen: 24062,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Long Slope',
+    isDataUrl: true,
+    srcLen: 37470,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Steps',
+    isDataUrl: true,
+    srcLen: 17442,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Steps + Rail',
+    isDataUrl: true,
+    srcLen: 22106,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Platform',
+    isDataUrl: true,
+    srcLen: 17742,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Wood Tower',
+    isDataUrl: true,
+    srcLen: 28366,
+    naturalWidth: 256,
+    complete: true
+  },
+  {
+    label: 'Wood Deck',
+    isDataUrl: true,
+    srcLen: 29690,
+    naturalWidth: 256,
+    complete: true
+  }
+]
+[test] Thumbs — rendered (data URL): 10, fallback (PNG): 0
+[test] → Rails
+[test] → Bowls
+[test] → Ledges
+[test] → Props
+[test] → Floors
+[test] Toggling sheet…
+[test] Entering skate setup…
+[test] Skater cards: [
+  {
+    label: 'Max',
+    srcHead: 'data:image/png;base64,iVBORw0KGgoAAAANSU',
+    srcLen: 26246,
+    isDataUrl: true
+  },
+  {
+    label: 'Juno',
+    srcHead: 'data:image/png;base64,iVBORw0KGgoAAAANSU',
+    srcLen: 24062,
+    isDataUrl: true
+  }
+]
+[test] Ride cards: [
+  {
+    label: 'Skateboard',
+    srcHead: 'data:image/png;base64,iVBORw0KGgoAAAANSU',
+    srcLen: 8834,
+    isDataUrl: true
+  },
+  {
+    label: 'Kickboard',
+    srcHead: 'data:image/png;base64,iVBORw0KGgoAAAANSU',
+    srcLen: 12966,
+    isDataUrl: true
+  }
+]
+[test] Switching to AI mode and entering gameplay…
+[test] Initial score: 0
+[test] Score timeline: [
+  { t: '2.3s', score: 0, grinding: false },
+  { t: '4.8s', score: 14, grinding: false },
+  { t: '7.2s', score: 14, grinding: false },
+  { t: '9.7s', score: 14, grinding: false },
+  { t: '12.2s', score: 14, grinding: false },
+  { t: '14.6s', score: 14, grinding: false },
+  { t: '17.0s', score: 14, grinding: false },
+  { t: '19.5s', score: 14, grinding: false },
+  { t: '21.9s', score: 14, grinding: false },
+  { t: '24.4s', score: 14, grinding: false },
+  { t: '26.9s', score: 14, grinding: false },
+  { t: '29.4s', score: 14, grinding: false },
+  { t: '31.8s', score: 14, grinding: false },
+  { t: '34.3s', score: 14, grinding: false },
+  { t: '36.8s', score: 14, grinding: false }
+]
+[test] Delta over 30s: 14 points (grinding frames observed: 0)
+[test] ---- PAGE ERRORS ----
+[test] [console.error] TypeError: Failed to execute 'requestAnimationFrame' on 'Window': parameter 1 is not of type 'Function'.
+    at QueueNewFrame (http://localhost:5181/node_modules/.vite/deps/chunk-DAIYRD4D.js?v=cb71b044:1134:14)
+    at _Engine._queueNewFrame (http://localhost:5181/node_modules/.vite/deps/chunk-DAIYRD4D.js?v=cb71b044:1518:12)
+    at _Engine.runRenderLoop (http://localhost:5181/node_modules/.vite/deps/chunk-DAIYRD4D.js?v=cb71b044:1530:33)
+    at BuilderScene.init (http://localhost:5181/src/builder/BuilderScene.ts:167:17)
+[test] 4 warnings suppressed (first 5):
+[test] [console.warn] [.WebGL-0x43e402ce0400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[test] [console.warn] [.WebGL-0x43e402ce0400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[test] [console.warn] [.WebGL-0x43e402ce0400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[test] [console.warn] [.WebGL-0x43e402ce0400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)
+
+=== SUMMARY ===
+{
+  "builder": {
+    "dataUrlThumbs": 10,
+    "fallbackThumbs": 0,
+    "totalTiles": 10
+  },
+  "skaters": [
+    {
+      "label": "Max",
+      "srcHead": "data:image/png;base64,iVBORw0KGgoAAAANSU",
+      "srcLen": 26246,
+      "isDataUrl": true
+    },
+    {
+      "label": "Juno",
+      "srcHead": "data:image/png;base64,iVBORw0KGgoAAAANSU",
+      "srcLen": 24062,
+      "isDataUrl": true
+    }
+  ],
+  "rides": [
+    {
+      "label": "Skateboard",
+      "srcHead": "data:image/png;base64,iVBORw0KGgoAAAANSU",
+      "srcLen": 8834,
+      "isDataUrl": true
+    },
+    {
+      "label": "Kickboard",
+      "srcHead": "data:image/png;base64,iVBORw0KGgoAAAANSU",
+      "srcLen": 12966,
+      "isDataUrl": true
+    }
+  ],
+  "scoreStart": 0,
+  "scoreEnd": 14,
+  "scoreDelta": 14,
+  "grindingFrames": 0,
+  "errors": 1,
+  "warnings": 4
+}

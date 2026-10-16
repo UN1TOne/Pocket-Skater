@@ -1,0 +1,183 @@
+﻿[outline] Opening landing…
+[outline] → Build a park
+[outline] Loading Sunset Plaza preset…
+[outline] Probing scene meshes for closed-surface and bbox info…
+[outline] Mesh info: {
+  "count": 112,
+  "sample": [
+    {
+      "name": "piece:c1sb9:__root__",
+      "itemId": "half-pipe",
+      "uid": "c1sb9",
+      "verts": 0,
+      "tris": 0,
+      "min": [
+        "-3.50",
+        "0.00",
+        "-6.50"
+      ],
+      "max": [
+        "-3.50",
+        "0.00",
+        "-6.50"
+      ],
+      "hasOutline": false,
+      "renderingGroup": 0
+    },
+    {
+      "name": "piece:c1sb9:half-pipe",
+      "itemId": "half-pipe",
+      "uid": "c1sb9",
+      "verts": 150,
+      "tris": 84,
+      "min": [
+        "-4.00",
+        "0.00",
+        "-7.00"
+      ],
+      "max": [
+        "-3.00",
+        "0.80",
+        "-6.00"
+      ],
+      "hasOutline": false,
+      "renderingGroup": 0,
+      "materialName": "toon-0"
+    },
+    {
+      "name": "piece:c1sba:__root__",
+      "itemId": "half-pipe",
+      "uid": "c1sba",
+      "verts": 0,
+      "tris": 0,
+      "min": [
+        "-2.50",
+        "0.00",
+        "-6.50"
+      ],
+      "max": [
+        "-2.50",
+        "0.00",
+        "-6.50"
+      ],
+      "hasOutline": false,
+      "renderingGroup": 0
+    },
+    {
+      "name": "piece:c1sba:half-pipe",
+      "itemId": "half-pipe",
+      "uid": "c1sba",
+      "verts": 150,
+      "tris": 84,
+      "min": [
+        "-3.00",
+        "0.00",
+        "-7.00"
+      ],
+      "max": [
+        "-2.00",
+        "0.80",
+        "-6.00"
+      ],
+      "hasOutline": false,
+      "renderingGroup": 0,
+      "materialName": "toon-0"
+    },
+    {
+      "name": "piece:c1sbb:__root__",
+      "itemId": "half-pipe",
+      "uid": "c1sbb",
+      "verts": 0,
+      "tris": 0,
+      "min": [
+        "-1.50",
+        "0.00",
+        "-6.50"
+      ],
+      "max": [
+        "-1.50",
+        "0.00",
+        "-6.50"
+      ],
+      "hasOutline": false,
+      "renderingGroup": 0
+    },
+    {
+      "name": "piece:c1sbb:half-pipe",
+      "itemId": "half-pipe",
+      "uid": "c1sbb",
+      "verts": 150,
+      "tris": 84,
+      "min": [
+        "-2.00",
+        "0.00",
+        "-7.00"
+      ],
+      "max": [
+        "-1.00",
+        "0.80",
+        "-6.00"
+      ],
+      "hasOutline": false,
+      "renderingGroup": 0,
+      "materialName": "toon-0"
+    }
+  ]
+}
+[outline] Opening dial on first placed piece…
+[outline] Dial target: { uid: 'c1sc1', itemId: 'rail-low-end', x: 3, z: 4 }
+[outline] After dial — mesh state for the highlighted piece:
+[outline] Highlight state: [
+  {
+    "name": "piece:c1sc1:__root__",
+    "uid": "c1sc1",
+    "verts": 0,
+    "tris": 0,
+    "renderOutline": false,
+    "outlineWidth": 0.02,
+    "outlineColor": [
+      1,
+      0,
+      0
+    ],
+    "renderingGroupId": 0,
+    "disabled": false,
+    "scaling": [
+      "1.00",
+      "1.00",
+      "1.00"
+    ]
+  },
+  {
+    "name": "piece:c1sc1:rail-low-end",
+    "uid": "c1sc1",
+    "verts": 172,
+    "tris": 98,
+    "renderOutline": true,
+    "outlineWidth": 0.035,
+    "outlineColor": [
+      0,
+      0,
+      0
+    ],
+    "renderingGroupId": 1,
+    "materialName": "toon-4",
+    "backFaceCulling": true,
+    "sideOrientation": null,
+    "disabled": false,
+    "scaling": [
+      "1.00",
+      "1.00",
+      "1.00"
+    ]
+  }
+]
+[outline] Errors: 2
+[outline] [
+  "TypeError: Failed to execute 'requestAnimationFrame' on 'Window': parameter 1 is not of type 'Function'.\n" +
+    '    at QueueNewFrame (http://localhost:5181/node_modules/.vite/deps/chunk-UXWELPKH.js?v=af5a0c82:1134:14)\n' +
+    '    at _Engine._queueNewFrame (http://localhost:5181/node_modules/.vite/deps/chunk-UXWELPKH.js?v=af5a0c82:1518:12)\n' +
+    '    at _Engine.runRenderLoop (http://localhost:5181/node_modules/.vite/deps/chunk-UXWELPKH.js?v=af5a0c82:1530:33)\n' +
+    '    at BuilderScene.init (http://localhost:5181/src/builder/BuilderScene.ts?t=1792077688611:168:17)',
+  'RuntimeError: Unable to load from /assets/models/half-pipe.glb: Scene has been disposed'
+]
