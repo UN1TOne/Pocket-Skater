@@ -39,6 +39,10 @@ export const DEFAULT_TUNING: ControllerTuning = {
   bailSpeed: 3.4,
 };
 
+/** Curved-rail arc geometry in mesh-local space (rail-curve / rail-high-curve GLBs). */
+const CURVE_ARC_CENTER_LOCAL = new Vector3(0.5, 0, 0.5);
+const CURVE_ARC_END_LOCAL = new Vector3(0.5, 0, 0);
+
 export interface ControllerEvents {
   onJump?: () => void;
   onLand?: (fallSpeed: number, airtime: number) => void;
@@ -492,51 +496,57 @@ export class PlayerController {
     const def = itemId ? CATALOG_BY_ID[itemId] : undefined;
     const hit = this.ray.hitPointWorld;
 
-    // Curved rails: perp-radial gives tangent magnitude, but the sign (CCW vs CW around
-    // the arc) depends on model-authoring convention and is ambiguous when velocity ⊥
-    // tangent at entry (dot≈0 → no flip → wrong half-tangent). To resolve: walk a small
-    // ARC STEP (dθ≈17°) in each rotational direction and raycast — the step that lands on
-    // the same piece is the arc's real continuation. Angular stepping (vs straight-line
-    // probing) stays at the arc radius so the probe doesn't fall off a thin curved rail
-    // just because the arc is bending.
+    // Curved rails: the Kenney curve meshes are a quarter circle running from local
+    // (0.5, 0) to (0, 0.5), so the arc is centred on the tile CORNER (0.5, 0.5), not on the
+    // mesh origin (tile centre). Using the origin made the "tangent" at the arc ends point
+    // straight across the rail, which shoved the rider off sideways on entry.
+    // Tangent sign: follow the rider's momentum. Only when velocity is ~perpendicular (e.g.
+    // landing from air) walk a small arc step each way and keep the side still on this piece.
     if (def?.curved) {
-      const center = node.getAbsolutePosition();
+      const wm = node.getWorldMatrix();
+      const center = Vector3.TransformCoordinates(CURVE_ARC_CENTER_LOCAL, wm);
+      const arcEnd = Vector3.TransformCoordinates(CURVE_ARC_END_LOCAL, wm);
+      const radius = Math.hypot(arcEnd.x - center.x, arcEnd.z - center.z);
       const dx = hit.x - center.x;
       const dz = hit.z - center.z;
       const rl = Math.hypot(dx, dz);
-      if (rl > 0.05) {
-        const dTheta = 0.3;
-        const probeArc = (sign: number, result: PhysicsRaycastResult): boolean => {
-          const c = Math.cos(dTheta * sign);
-          const s = Math.sin(dTheta * sign);
-          const nx = dx * c - dz * s;
-          const nz = dx * s + dz * c;
-          const px = center.x + nx;
-          const pz = center.z + nz;
-          const from = new Vector3(px, hit.y + 0.3, pz);
-          const to = new Vector3(px, hit.y - 0.4, pz);
-          this.physics.raycastToRef(from, to, result);
-          if (!result.hasHit) return false;
-          const hitMeta = result.body?.transformNode?.metadata as { uid?: string } | undefined;
-          return !uid || hitMeta?.uid === uid;
-        };
-        const ccwOn = probeArc(+1, this.rayFwd);
-        const cwOn = probeArc(-1, this.rayBwd);
+      if (rl > 0.05 && radius > 0.05) {
         let tx = -dz / rl;
         let tz = dx / rl;
         const v = this.lastVel;
-        if (cwOn && !ccwOn) {
-          tx = -tx; tz = -tz;
-        } else if (ccwOn && cwOn) {
-          if (tx * v.x + tz * v.z < 0) { tx = -tx; tz = -tz; }
-        } else if (!ccwOn && !cwOn) {
-          if (tx * v.x + tz * v.z < 0) { tx = -tx; tz = -tz; }
+        const vh = Math.hypot(v.x, v.z);
+        const vDot = vh > 1e-3 ? (tx * v.x + tz * v.z) / vh : 0;
+        let sign: number;
+        if (Math.abs(vDot) > 0.25) {
+          sign = vDot >= 0 ? 1 : -1;
+        } else {
+          const dTheta = 0.3;
+          const probeArc = (s: number, result: PhysicsRaycastResult): boolean => {
+            const c = Math.cos(dTheta * s);
+            const sn = Math.sin(dTheta * s);
+            const px = center.x + (dx * c - dz * sn) * (radius / rl);
+            const pz = center.z + (dx * sn + dz * c) * (radius / rl);
+            this.physics.raycastToRef(new Vector3(px, hit.y + 0.3, pz), new Vector3(px, hit.y - 0.4, pz), result);
+            if (!result.hasHit) return false;
+            const hitMeta = result.body?.transformNode?.metadata as { uid?: string } | undefined;
+            return !uid || hitMeta?.uid === uid;
+          };
+          const ccwOn = probeArc(+1, this.rayFwd);
+          const cwOn = probeArc(-1, this.rayBwd);
+          if (ccwOn !== cwOn) sign = ccwOn ? 1 : -1;
+          else {
+            const faceDot = Math.sin(this.facing) * tx + Math.cos(this.facing) * tz;
+            sign = faceDot >= 0 ? 1 : -1;
+          }
         }
+        tx *= sign;
+        tz *= sign;
         this.railDir = new Vector3(tx, 0, tz);
-        this.railCenter.copyFrom(hit);
+        // Pin target = the arc's centreline under the rider, so per-frame tangent steps
+        // (which drift outward along the chord) get pulled back onto the bend.
+        this.railCenter.set(center.x + (dx / rl) * radius, hit.y, center.z + (dz / rl) * radius);
         return;
       }
-      // Hit landed exactly on the piece center — fall through to the straight-sample path.
     }
 
     const roughFwd = Vector3.TransformNormal(new Vector3(0, 0, 1), node.getWorldMatrix());
