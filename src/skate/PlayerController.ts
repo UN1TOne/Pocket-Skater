@@ -43,6 +43,19 @@ export const DEFAULT_TUNING: ControllerTuning = {
 const CURVE_ARC_CENTER_LOCAL = new Vector3(0.5, 0, 0.5);
 const CURVE_ARC_END_LOCAL = new Vector3(0.5, 0, 0);
 
+/** Grind speed relative to the speed the rider hit the rail with. */
+const GRIND_SPEED_MULT = 2;
+
+/**
+ * Character pose per rider state. The skate-* clips are a sideways board stance (hips and
+ * feet yawed, head turned 60°), which on a kick scooter reads as the rider looking off to
+ * one side — scooter riders face the bars with both hands on them instead.
+ */
+const POSES: Record<RideId, Record<"idle" | "riding" | "air" | "airLong" | "grinding", string>> = {
+  skateboard: { idle: "skate-stand", riding: "skate", air: "skate-air", airLong: "skate-grab", grinding: "skate-grab" },
+  scooter: { idle: "holding-both", riding: "holding-both", air: "holding-both", airLong: "holding-both", grinding: "holding-both" },
+};
+
 export interface ControllerEvents {
   onJump?: () => void;
   onLand?: (fallSpeed: number, airtime: number) => void;
@@ -100,6 +113,10 @@ export class PlayerController {
   private railReleaseTimer = 0;
   private railTracking = false;
   private railWindowStart = new Vector3();
+  /** Locked along-rail speed for the current grind (0 = not grinding); see GRIND_SPEED_MULT. */
+  private railSpeed = 0;
+  private railSpeedHold = 0;
+  private railBoosted = false;
   private railLastAlong = 0;
   private railWindow = 0;
   private railExpected = 0;
@@ -157,7 +174,7 @@ export class PlayerController {
       this.anims.set(key, ag);
       ag.stop();
     }
-    this.play("skate-stand");
+    this.play(POSES[rideId].idle);
 
     this.fx = new SkateFX(scene, this.collider);
     this.lastSafePos.copyFrom(this.collider.position);
@@ -353,11 +370,20 @@ export class PlayerController {
       const dir = this.railDir;
       const perpX = -dir.z;
       const perpZ = dir.x;
-      const along = newVel.x * dir.x + newVel.z * dir.z;
+      // Along-rail speed comes from the body, not newVel: the ground-steering lerp above pulls
+      // toward maxSpeed and would otherwise drag every grind back down to riding pace.
+      const along = vel.x * dir.x + vel.z * dir.z;
       const perp = newVel.x * perpX + newVel.z * perpZ;
       // Thin rails: hard floor at 3.2 m/s. Flat grinds (ledges/boxes): softer 2.2 m/s floor so
       // the AI doesn't bleed to a halt mid-grind. Both still carry the grind score.
       const minRailSpeed = this.railIsThin ? 3.2 : 2.2;
+      // Grinds run at GRIND_SPEED_MULT x the entry speed, locked in on contact so it doesn't
+      // compound frame over frame (or across the probe gap between two rail pieces).
+      if (this.railSpeed === 0) {
+        this.railSpeed = Math.min(Math.max(Math.abs(along), minRailSpeed) * GRIND_SPEED_MULT, t.maxSpeed * GRIND_SPEED_MULT);
+      }
+      this.railSpeedHold = 0.3;
+      this.railBoosted = true;
 
       let sign: number;
       if (Math.abs(along) > 0.4) sign = along >= 0 ? 1 : -1;
@@ -365,7 +391,7 @@ export class PlayerController {
         const faceDot = Math.sin(this.facing) * dir.x + Math.cos(this.facing) * dir.z;
         sign = faceDot >= 0 ? 1 : -1;
       }
-      const alongTarget = Math.max(Math.abs(along), minRailSpeed) * sign;
+      const alongTarget = Math.max(Math.abs(along), this.railSpeed) * sign;
       const alongK = 1 - Math.exp(-24 * dt);
       const perpK = 1 - Math.exp(-40 * dt);
       const newAlong = Scalar.Lerp(along, alongTarget, alongK);
@@ -400,9 +426,23 @@ export class PlayerController {
       // newVel to the body again now that rail assist has finished.
       this.body.setLinearVelocity(newVel);
       this.lastVel.copyFrom(newVel);
-    } else if (!this.grounded || !this.groundTags.includes("rail")) {
+    } else {
+      this.railSpeedHold -= dt;
+      if (this.railSpeedHold <= 0) this.railSpeed = 0;
+      if (this.railBoosted) {
+        // The grind boost stays on the rail: shooting off the end at double speed slams riders
+        // into whatever is next. Hand back at most normal riding speed (jump height untouched).
+        this.railBoosted = false;
+        const h = Math.hypot(newVel.x, newVel.z);
+        if (h > t.maxSpeed) {
+          newVel.x *= t.maxSpeed / h;
+          newVel.z *= t.maxSpeed / h;
+          this.body.setLinearVelocity(newVel);
+          this.lastVel.copyFrom(newVel);
+        }
+      }
       // Left the rail: hand the body back to physics authority.
-      this.body.disablePreStep = true;
+      if (!this.grounded || !this.groundTags.includes("rail")) this.body.disablePreStep = true;
     }
 
     const hSpeed = Math.hypot(newVel.x, newVel.z);
@@ -430,10 +470,11 @@ export class PlayerController {
         this.grindLockTimer = 0.35;
       }
       this.state = next;
-      if (next === "air") this.play(this.airtime > 0.5 ? "skate-grab" : "skate-air", true);
-      else if (next === "grinding") this.play("skate-grab", true);
-      else if (next === "riding") this.play(this.rideId === "scooter" ? "skate-stand" : "skate", true);
-      else this.play("skate-stand", true);
+      const poses = POSES[this.rideId];
+      if (next === "air") this.play(this.airtime > 0.5 ? poses.airLong : poses.air, true);
+      else if (next === "grinding") this.play(poses.grinding, true);
+      else if (next === "riding") this.play(poses.riding, true);
+      else this.play(poses.idle, true);
     }
     this.fx.setGrinding(next === "grinding");
     this.fx.setSpeed(hSpeed);
@@ -689,7 +730,10 @@ export class PlayerController {
     this.teleport(this.lastSafePos.add(new Vector3(0, 0, 0)));
     this.state = "idle";
     this.airtime = 0;
-    this.play("skate-stand");
+    this.airRailTarget = null;
+    this.grindLockTimer = 0;
+    this.railSpeed = 0;
+    this.play(POSES[this.rideId].idle);
     this.visual.setEnabled(true);
     this.fx.burstPoof(8);
   }

@@ -12,8 +12,8 @@ import { gameInput } from "@/engine/input";
 import { Sfx } from "@/engine/audio/Sfx";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import type { GameHud } from "@/store/useGameStore";
-import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, airScore, grindBonus, grindLabel } from "./scoring";
-import { findSpawn, RespawnPlanner, type RawPiece } from "./parkLayout";
+import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, ScoreFarmGuard, airScore, grindBonus, grindLabel } from "./scoring";
+import { findEmptyNearby, findSpawn, RespawnPlanner, type RawPiece } from "./parkLayout";
 import { buildSpots } from "./spots";
 import type { CharacterId, MapData, PlayMode, RideId } from "@/types/game";
 import { PlayerController } from "./PlayerController";
@@ -47,6 +47,7 @@ export class SkateScene {
   private camTarget = new Vector3();
   private respawns = new RespawnPlanner();
   private grindStart = 0;
+  private farmGuard = new ScoreFarmGuard();
 
   constructor(private opts: SkateSceneOptions) {
     this.engine = createEngine(opts.canvas);
@@ -150,6 +151,7 @@ export class SkateScene {
           const bonus = grindBonus(dur);
           if (bonus > 0) {
             this.score += bonus;
+            this.farmGuard.gain();
             this.opts.onHud({ score: Math.floor(this.score), toast: { text: grindLabel(dur), bonus, t: performance.now() } });
           }
         }
@@ -193,6 +195,7 @@ export class SkateScene {
 
   private addScore(n: number) {
     this.score += n;
+    this.farmGuard.gain();
     this.opts.onHud({ score: Math.floor(this.score) });
   }
 
@@ -205,6 +208,24 @@ export class SkateScene {
     const dest = this.respawns.pick(safe, performance.now(), this.opts.map);
     this.player.respawn();
     if (dest !== safe) this.player.teleport(dest);
+  }
+
+  /**
+   * The rider has been racking up points without leaving one spot (wedged in a rail or wall):
+   * flag it and put them back on open ground. The pending grind bonus is dropped.
+   */
+  private stopFarming() {
+    const pos = this.player.position.clone();
+    if (this.player.state === "grinding") {
+      this.sfx.grindStop();
+      this.opts.onHud({ grinding: false });
+    }
+    this.grindStart = 0;
+    const dest = findEmptyNearby(this.opts.map, pos) ?? findSpawn(this.opts.map);
+    this.player.respawn();
+    this.player.teleport(dest);
+    this.farmGuard.reset(dest.x, dest.y, dest.z);
+    this.opts.onHud({ toast: { text: "Abnormal activity detected — respawning", bonus: 0, t: performance.now(), tone: "warn" } });
   }
 
   private tick() {
@@ -238,8 +259,12 @@ export class SkateScene {
     this.player.update(dt);
     if (this.player.state === "grinding") {
       this.score += dt * GRIND_POINTS_PER_SEC;
+      this.farmGuard.gain();
       this.sfx.setGrindSpeed(this.player.speed);
     }
+
+    const pp = this.player.position;
+    if (this.player.state !== "bailed" && this.farmGuard.update(dt, pp.x, pp.y, pp.z)) this.stopFarming();
 
     if (this.bail.update(dt)) {
       this.doRespawn();

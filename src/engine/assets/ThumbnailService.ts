@@ -25,7 +25,8 @@ export class ThumbnailService {
   private cache = new Map<string, string>();
   private pending = new Map<string, Promise<string>>();
   private canvas: HTMLCanvasElement;
-  private queue: Promise<unknown> = Promise.resolve();
+  private waiting: Array<{ id: string; resolve: (url: string) => void; reject: (e: unknown) => void }> = [];
+  private busy = false;
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -64,20 +65,41 @@ export class ThumbnailService {
     this.loader = new AssetLoader(this.scene);
   }
 
-  getThumbnail(id: string): Promise<string> {
+  /**
+   * `urgent` requests (a tile that's on screen right now) jump ahead of the background
+   * prewarm, so a skater or ride card never waits behind the whole park catalog.
+   */
+  getThumbnail(id: string, urgent = false): Promise<string> {
     if (this.cache.has(id)) return Promise.resolve(this.cache.get(id)!);
+    const waiting = this.waiting.findIndex((w) => w.id === id);
+    if (waiting >= 0 && urgent) this.waiting.unshift(...this.waiting.splice(waiting, 1));
     const inFlight = this.pending.get(id);
     if (inFlight) return inFlight;
-    const task = this.enqueue(id);
+    const task = new Promise<string>((resolve, reject) => {
+      const job = { id, resolve, reject };
+      if (urgent) this.waiting.unshift(job);
+      else this.waiting.push(job);
+    });
     this.pending.set(id, task);
-    task.finally(() => this.pending.delete(id));
+    task.finally(() => this.pending.delete(id)).catch(() => undefined);
+    void this.pump();
     return task;
   }
 
-  private enqueue(id: string): Promise<string> {
-    const next = this.queue.then(() => this.render(id));
-    this.queue = next.catch(() => undefined);
-    return next;
+  private async pump() {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      for (let job = this.waiting.shift(); job; job = this.waiting.shift()) {
+        try {
+          job.resolve(await this.render(job.id));
+        } catch (e) {
+          job.reject(e);
+        }
+      }
+    } finally {
+      this.busy = false;
+    }
   }
 
   private async render(id: string): Promise<string> {
@@ -112,7 +134,7 @@ export class ThumbnailService {
       // which starved later tiles and left the user staring at fallback PNGs.
       await this.scene.whenReadyAsync();
       this.scene.render();
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      await nextFrame();
       this.scene.render();
 
       const url = this.canvas.toDataURL("image/png");
@@ -129,6 +151,21 @@ export class ThumbnailService {
     this.engine.dispose();
     this.canvas.remove();
   }
+}
+
+/**
+ * One frame's breather between the warm-up and capture renders. Capped by a timeout: browsers
+ * throttle rAF to ~1/s in background or occluded tabs, which stalled the whole thumbnail
+ * queue (one tile per second) while the splash was up.
+ */
+export function nextFrame(): Promise<void> {
+  return new Promise((r) => {
+    const t = setTimeout(r, 32);
+    requestAnimationFrame(() => {
+      clearTimeout(t);
+      r();
+    });
+  });
 }
 
 let singleton: ThumbnailService | null = null;
