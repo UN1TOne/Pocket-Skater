@@ -53,6 +53,13 @@ export const AI_TUNING = {
   pickSharpness: 4,
   /** Steer straight at a run-up start when the way is clear instead of trailing the crowd agent (1 = on). */
   directNav: 1,
+  /**
+   * Navmesh step height in cells (ch = 0.04 m). Must stay below a low rail (0.25 m) / grind box
+   * (0.21 m) or paths run straight over them and the rider plows into their sides.
+   */
+  navClimbCells: 5,
+  /** Navmesh clearance from walls in cells (cs = 0.1 m); paths hugging walls get clipped on corners. */
+  navRadiusCells: 3,
 };
 /** Board clearance over a rail top at the jump apex (m). */
 const RAIL_CLEARANCE = 0.1;
@@ -200,8 +207,8 @@ export class AiNavigator {
         ch: 0.04,
         walkableSlopeAngle: 68,
         walkableHeight: 8,
-        walkableClimb: 7,
-        walkableRadius: 3,
+        walkableClimb: AI_TUNING.navClimbCells,
+        walkableRadius: AI_TUNING.navRadiusCells,
         maxEdgeLen: 12,
         maxSimplificationError: 1.1,
         minRegionArea: 4,
@@ -718,8 +725,13 @@ export class AiNavigator {
       distToGoal = Vector3.Distance(pos, plan.endNear);
       targetThrottle = 1; // full gas into the rail
     } else if (plan.phase === "air" && plan.spot.kind === "ramp") {
-      // Off a ramp: don't fight the trajectory — keep pushing the way we're already going.
-      steer = new Vector3(this.smoothSteer.x, 0, this.smoothSteer.z);
+      // Quarter-pipe / bowl air comes back down the wall it launched from: lean back toward the
+      // transition rather than on over the deck (where a park-edge quarter-pipe has the boundary
+      // wall). Off a kicker, keep going the way we're already going.
+      steer =
+        plan.spot.copingY !== undefined
+          ? new Vector3(-plan.axisInward.x, 0, -plan.axisInward.z)
+          : new Vector3(this.smoothSteer.x, 0, this.smoothSteer.z);
       distToGoal = 2;
       targetThrottle = 0.9;
     } else if (plan.phase === "air") {

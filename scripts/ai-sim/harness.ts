@@ -70,6 +70,7 @@ export interface RunResult {
   bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }>;
   /** Airtimes of landings, keyed by the catalog id launched from. */
   landings: Record<string, number[]>;
+  impactsByTag: Record<string, number>;
   launchSpeeds: Record<string, number[]>;
   longGrinds: Array<{ t: number; dur: number; items: string[]; path: number; end: number[] }>;
   /** What the park analysis (src/skate/spots.ts) found; geometryMisses should be empty. */
@@ -161,13 +162,21 @@ async function main() {
   let grindPath = 0;
   const itemOf = new Map(map.items.map((it) => [it.uid, it.itemId]));
   const landings: Record<string, number[]> = {};
+  const impactsByTag: Record<string, number> = {};
   /** Rider speed at take-off, parallel to `landings`. */
   const launchSpeeds: Record<string, number[]> = {};
   let launchSpeed = 0;
   const bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }> = [];
-  const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, airSec: 0, bails: 0, unsticks: 0, slowSec: 0 };
+  const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, airSec: 0, bails: 0, unsticks: 0, slowSec: 0, impacts: 0, railImpacts: 0 };
   const stub = (): Instance => ({ root: new TransformNode("stub", scene), meshes: [], animationGroups: [], dispose() {} });
   const player = new PlayerController(scene, stub(), stub(), "skateboard", findSpawn(map), {
+    // Side-on knocks that didn't bail (PlayerController.onImpact) — paths cutting through pieces.
+    onImpact: (_speed, metal, tags) => {
+      m.impacts += 1;
+      const k = tags.length ? tags.join("+") : "(untagged)";
+      impactsByTag[k] = (impactsByTag[k] ?? 0) + 1;
+      if (metal) m.railImpacts += 1;
+    },
     onLand: (_fall, airtime) => {
       // Airtime by what we launched from (ramp model / "flat" / "rail") — tuning input for ramps.
       if (airtime > 0.05) {
@@ -316,6 +325,7 @@ async function main() {
     bailSites,
     longGrinds,
     landings,
+    impactsByTag,
     launchSpeeds,
     spots: {
       grind: spots.filter((s) => s.kind === "grind").length,

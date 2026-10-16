@@ -157,6 +157,8 @@ function summarize(runs) {
       trickPct: mean((r) => (((r.grindSec ?? 0) + (r.airSec ?? 0)) / r.seconds) * 100),
       bailsPerMin: perMin("bails"),
       unsticksPerMin: perMin("unsticks"),
+      impactsPerMin: mean((r) => ((r.impacts ?? 0) / r.seconds) * 60),
+      railImpactsPerMin: mean((r) => ((r.railImpacts ?? 0) / r.seconds) * 60),
       slowPct: mean((r) => (r.slowSec / r.seconds) * 100),
       spotsPct: mean((r) => (r.spotsUsed / Math.max(1, r.spotsTotal)) * 100),
       hotspotPct: mean((r) => r.hotspotShare * 100),
@@ -186,6 +188,8 @@ function printTable(summary, baseline) {
     ["hotspotPct", "hotspot %", 0, -1],
     ["slowPct", "slow %", 0, -1],
     ["unsticksPerMin", "unstick/min", 2, -1],
+    ["impactsPerMin", "knocks/min", 1, -1],
+    ["railImpactsPerMin", "rail knk/min", 1, -1],
     ["bailsPerMin", "bails/min", 2, -1],
   ];
   const w = 14;
