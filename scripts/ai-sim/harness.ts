@@ -29,7 +29,7 @@ import { gridToWorld, rotationY } from "@/engine/world/park";
 import { footprintCells } from "@/store/useGameStore";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import { PlayerController } from "@/skate/PlayerController";
-import { AiNavigator } from "@/skate/AiNavigator";
+import { AI_TUNING, AiNavigator } from "@/skate/AiNavigator";
 import { findSpawn, RespawnPlanner, type RawPiece } from "@/skate/parkLayout";
 import { buildSpots, SPOT_MODEL_IDS, verifySpotGeometry } from "@/skate/spots";
 import type { MapData, Rotation } from "@/types/game";
@@ -63,7 +63,7 @@ export interface RunResult {
   /** Distinct grid cells visited / all cells. */
   coverage: number;
   ai: Record<string, number | string>;
-  spotStats: Record<string, { jumps: number; lands: number }>;
+  spotStats: Record<string, { attempts: number; points: number; jumps: number; lands: number }>;
   spotInfo: Record<string, string>;
   /** Where bails happened + catalog ids within one cell — for diagnosing bail hotspots. */
   bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }>;
@@ -80,6 +80,8 @@ async function main() {
   const seed = Number(SEED_S);
   const seconds = Number(SECONDS_S);
   Math.random = mulberry32(seed);
+  // AI_TUNE='{"noveltyDamp":0.7}' overrides target-choice tuning for sweeps.
+  if (process.env.AI_TUNE) Object.assign(AI_TUNING, JSON.parse(process.env.AI_TUNE));
   const map = MAP_ID === CATALOG_MAP_ID ? catalogTestMap() : PRESET_MAPS.find((m) => m.id === MAP_ID);
   if (!map) throw new Error(`unknown map ${MAP_ID}`);
 
@@ -162,12 +164,14 @@ async function main() {
       const air = airScore(airtime);
       if (air > 0) {
         score += air;
+        ai.notePoints(air);
         m.airs += 1;
         if (launchUid && skateable.has(launchUid)) used.add(launchUid);
       }
     },
     onBail: (vel, point) => {
       score = Math.max(0, score - BAIL_PENALTY);
+      ai.notePoints(-BAIL_PENALTY);
       m.bails += 1;
       const cx = Math.floor(point.x + half);
       const cz = Math.floor(point.z + half);
@@ -184,6 +188,7 @@ async function main() {
         const startedAt = grindStartT;
         grindStartT = -1;
         score += grindBonus(dur);
+        ai.notePoints(grindBonus(dur));
         m.grinds += 1;
         m.longestGrind = Math.max(m.longestGrind, dur);
         if (dur > 6) {
@@ -219,7 +224,10 @@ async function main() {
   scene.onBeforeRenderObservable.add(() => {
     ai.update(player, DT);
     player.update(DT);
-    if (player.state === "grinding") score += DT * GRIND_POINTS_PER_SEC;
+    if (player.state === "grinding") {
+      score += DT * GRIND_POINTS_PER_SEC;
+      ai.notePoints(DT * GRIND_POINTS_PER_SEC);
+    }
     if (bailTimer > 0) {
       bailTimer -= DT;
       if (bailTimer <= 0) {

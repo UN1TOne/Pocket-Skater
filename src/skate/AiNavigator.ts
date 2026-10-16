@@ -8,6 +8,51 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { PlayerController } from "./PlayerController";
 import type { Spot, SpotEntry } from "./spots";
+import { GRIND_POINTS_PER_SEC, airScore, grindBonus } from "./scoring";
+
+/** Per-spot learning: outcomes of past attempts plus novelty / cooldown bookkeeping. */
+interface SpotMemory {
+  attempts: number;
+  /** Net points earned across attempts (bails count negative). */
+  points: number;
+  jumps: number;
+  lands: number;
+  /** Consecutive pointless attempts. */
+  fails: number;
+  lastTry: number;
+  /** Clock times of recent attempts (for the repeat penalty). */
+  recent: number[];
+  coolUntil: number;
+}
+
+/**
+ * Target-choice tuning (see AiNavigator.evaluate). Mutable so the eval harness can sweep it
+ * (AI_TUNE env); the game uses these defaults.
+ */
+export const AI_TUNING = {
+  /** Weight of the geometric prior, in attempts. */
+  priorTries: 2,
+  /** Assumed chance an untried spot pays out. */
+  priorSuccess: 0.6,
+  /** How many attempts' worth of trust the geometric prior keeps when pooling a model's results. */
+  modelPriorTries: 3,
+  /** Average speed between spots (m/s) — converts navmesh path length to seconds. */
+  cruiseSpeed: 3.5,
+  runUpSec: 1,
+  /** Just-tried spots keep (1 - noveltyDamp) of their appeal, recovering over ~noveltyTauSec. */
+  noveltyDamp: 0.5,
+  noveltyTauSec: 15,
+  /** Extra divisor per attempt at this spot in the last recentWindowSec: 1 / (1 + n * noveltyPerTry). */
+  noveltyPerTry: 0,
+  recentWindowSec: 60,
+  failsToCool: 3,
+  coolDownSec: 12,
+  /** Exponent on utility/best for the weighted draw: higher = greedier. */
+  pickSharpness: 4,
+};
+/** Time allowed to drive `metres` of navmesh path to a run-up before treating it as stuck. */
+const navBudget = (metres: number) => 2.5 + metres / 2;
+
 
 /**
  * Plan for hitting a spot through one of its checked entries. The AI walks the state machine:
@@ -33,6 +78,10 @@ interface RailPlan {
   phase: "nav" | "lineup" | "air" | "grind";
   phaseTimer: number;
   totalTimer: number;
+  /** Re-approaches left after overrunning the run-up without a clean take-off. */
+  retries: number;
+  /** Seconds allowed to reach `approach` before we call it stuck (scales with path length). */
+  navBudget: number;
 }
 
 let recastModule: unknown | null = null;
@@ -65,13 +114,17 @@ export class AiNavigator {
   usingNavMesh = false;
 
   debugMesh: Mesh | null = null;
-  /** Per-spot outcomes (jumps tried / landed). Diagnostics now; success-rate input later. */
-  readonly spotStats = new Map<string, { jumps: number; lands: number }>();
-  private stat(spot: Spot) {
-    let st = this.spotStats.get(spot.id);
-    if (!st) this.spotStats.set(spot.id, (st = { jumps: 0, lands: 0 }));
-    return st;
-  }
+  /** What the AI has learned per spot; drives target choice (and the eval harness reads it). */
+  readonly spotStats = new Map<string, SpotMemory>();
+  /** AI-local clock (s) for novelty / cooldowns. */
+  private clock = 0;
+  /** Points earned since the current plan started. */
+  private planPoints = 0;
+  /**
+   * Per spot model: points actually earned vs what the geometric prior promised. Lets one
+   * pointless quarter-pipe pull down every quarter-pipe instead of trying them all.
+   */
+  private models = new Map<string, { earned: number; promised: number }>();
   /** DEV-mode counters for diagnosing the rail-approach pipeline. */
   readonly debug = {
     plans: 0,
@@ -83,6 +136,11 @@ export class AiNavigator {
     lineupTimeout: 0,
     rampPlans: 0,
     rampAirs: 0,
+    cooldowns: 0,
+    roams: 0,
+    navTimeout: 0,
+    lineupOverrun: 0,
+    planTimeout: 0,
     bailed: 0,
     lastPhase: "idle" as "idle" | "nav" | "lineup" | "air" | "grind",
     lastEndNearDist: 0,
@@ -151,14 +209,8 @@ export class AiNavigator {
     this.pickTarget(ctrl.position);
   }
 
-  /**
-   * Plan for `spot` through its nearest entry the AI can actually drive to from here — a run-up
-   * inside a walled bowl is unreachable from outside it (and vice versa).
-   */
-  private buildRailPlan(spot: Spot, from: Vector3): RailPlan | null {
-    const byDistance = [...spot.entries].sort((a, b) => Vector3.Distance(from, a.start) - Vector3.Distance(from, b.start));
-    const entry = byDistance.find((e) => this.reachable(from, e.start));
-    if (!entry) return null;
+  /** Plan for `spot` through `entry`. */
+  private buildRailPlan(spot: Spot, entry: SpotEntry, from: Vector3): RailPlan {
     const approach = entry.start.clone();
     approach.y = Math.max(0.1, from.y);
     const airAim = entry.target.clone();
@@ -175,38 +227,128 @@ export class AiNavigator {
       phase: "nav",
       phaseTimer: 0,
       totalTimer: 0,
+      retries: 1,
+      navBudget: navBudget(Vector3.Distance(from, entry.start)),
     };
   }
 
-  /** Navmesh path from `from` really ends at `to` (not just at the closest reachable point). */
-  private reachable(from: Vector3, to: Vector3): boolean {
-    if (!this.plugin) return true;
+  /**
+   * Navmesh path length from `from` to `to`, or null when the path doesn't really get there
+   * (a run-up inside a walled bowl is unreachable from outside it, and vice versa).
+   */
+  private pathLength(from: Vector3, to: Vector3): number | null {
+    if (!this.plugin) return Vector3.Distance(from, to);
     const goal = this.plugin.getClosestPoint(to);
-    if (Math.hypot(goal.x - to.x, goal.z - to.z) > 0.4) return false;
+    if (Math.hypot(goal.x - to.x, goal.z - to.z) > 0.4) return null;
     const path = this.plugin.computePath(this.plugin.getClosestPoint(from), goal);
-    if (path.length === 0) return false;
+    if (path.length === 0) return null;
     const last = path[path.length - 1];
-    return Math.hypot(last.x - goal.x, last.z - goal.z) < 0.3;
+    if (Math.hypot(last.x - goal.x, last.z - goal.z) > 0.3) return null;
+    let len = Vector3.Distance(from, path[0]);
+    for (let i = 1; i < path.length; i++) len += Vector3.Distance(path[i - 1], path[i]);
+    return len;
+  }
+
+  /** Memory for `spot`, created on first use. */
+  private mem(spot: Spot): SpotMemory {
+    let m = this.spotStats.get(spot.id);
+    if (!m) this.spotStats.set(spot.id, (m = { attempts: 0, points: 0, jumps: 0, lands: 0, fails: 0, lastTry: -Infinity, recent: [], coolUntil: 0 }));
+    return m;
+  }
+
+  /** Score feed from the game: points earned (or lost) since the last call. */
+  notePoints(points: number) {
+    if (this.rail) this.planPoints += points;
+  }
+
+  /** Closes the current plan's books: what it earned updates the spot's memory. */
+  private settlePlan() {
+    const plan = this.rail;
+    if (!plan) return;
+    const m = this.mem(plan.spot);
+    m.attempts += 1;
+    m.points += this.planPoints;
+    const g = this.models.get(plan.spot.model) ?? { earned: 0, promised: 0 };
+    g.earned += this.planPoints;
+    g.promised += this.priorPoints(plan.spot);
+    this.models.set(plan.spot.model, g);
+    m.lastTry = this.clock;
+    m.recent.push(this.clock);
+    if (this.planPoints > 0) m.fails = 0;
+    else if (++m.fails >= AI_TUNING.failsToCool) {
+      m.fails = 0;
+      m.coolUntil = this.clock + AI_TUNING.coolDownSec;
+      this.debug.cooldowns += 1;
+    }
+    this.planPoints = 0;
+    this.rail = null;
+  }
+
+  /**
+   * Expected points for one attempt before we've tried the spot, from its geometry and the
+   * score rules: grinds score by how long the line takes to ride, ramps by expected airtime.
+   */
+  /** Geometric prior scaled by how this spot's model has paid out so far (shrunk toward 1). */
+  private modelAdjustedPrior(spot: Spot): number {
+    const prior = this.priorPoints(spot);
+    const g = this.models.get(spot.model);
+    if (!g) return prior;
+    const factor = (g.earned + AI_TUNING.modelPriorTries * prior) / (g.promised + AI_TUNING.modelPriorTries * prior);
+    return prior * Math.max(0.05, factor);
+  }
+
+  private priorPoints(spot: Spot): number {
+    if (spot.kind === "grind") {
+      const t = spot.length / (spot.thin ? 4.2 : 3);
+      return AI_TUNING.priorSuccess * (GRIND_POINTS_PER_SEC * t + grindBonus(t));
+    }
+    return AI_TUNING.priorSuccess * airScore(0.3 + 0.5 * spot.height);
+  }
+
+  /**
+   * Utility = expected points per second of effort, damped for spots we tried recently.
+   * Expected points blend the geometric prior (weighted as AI_TUNING.priorTries attempts) with what
+   * attempts here actually earned — so spots that keep failing sink on their own.
+   */
+  private evaluate(spot: Spot, from: Vector3): { spot: Spot; entry: SpotEntry; travel: number; utility: number } | null {
+    const m = this.mem(spot);
+    if (this.clock < m.coolUntil) return null;
+    let entry: SpotEntry | null = null;
+    let travel = Infinity;
+    for (const e of spot.entries) {
+      if (Vector3.Distance(from, e.start) >= travel) continue; // can't beat the best path found
+      const len = this.pathLength(from, e.start);
+      if (len !== null && len < travel) {
+        travel = len;
+        entry = e;
+      }
+    }
+    if (!entry) return null;
+    const expected = (m.points + AI_TUNING.priorTries * this.modelAdjustedPrior(spot)) / (m.attempts + AI_TUNING.priorTries);
+    const rideSec = spot.kind === "grind" ? spot.length / (spot.thin ? 4.2 : 3) : 1;
+    const seconds = travel / AI_TUNING.cruiseSpeed + AI_TUNING.runUpSec + rideSec;
+    m.recent = m.recent.filter((t) => this.clock - t < AI_TUNING.recentWindowSec);
+    const novelty =
+      (1 - AI_TUNING.noveltyDamp * Math.exp(-(this.clock - m.lastTry) / AI_TUNING.noveltyTauSec)) / (1 + AI_TUNING.noveltyPerTry * m.recent.length);
+    return { spot, entry, travel, utility: (Math.max(0.5, expected) / seconds) * novelty };
   }
 
   private pickTarget(from: Vector3) {
-    // Discard any in-flight rail plan when picking a fresh target.
-    this.rail = null;
-    const grinds = this.spots.filter((s) => s.kind === "grind" && s.entries.length > 0);
-    const ramps = this.spots.filter((s) => s.kind === "ramp" && s.entries.length > 0);
-    // Strongly bias toward grind pieces so we actually attempt scoring runs.
-    const wantGrind = grinds.length > 0 && Math.random() < 0.85;
-    const pool = wantGrind ? grinds : Math.random() < 0.95 ? ramps : [];
-    // A few tries: the picked spot may have no entry reachable from where we are.
-    const tried = new Set<Spot>();
-    for (let attempt = 0; attempt < 4 && tried.size < pool.length; attempt++) {
-      const spot = this.pickWeighted(pool.filter((p) => !tried.has(p)), from);
-      if (!spot) break;
-      tried.add(spot);
-      const plan = this.buildRailPlan(spot, from);
-      if (!plan) continue;
+    this.settlePlan();
+    const options = this.spots
+      .filter((s) => s.entries.length > 0)
+      .map((s) => this.evaluate(s, from))
+      .filter((o): o is NonNullable<typeof o> => o !== null);
+    if (options.length > 0) {
+      // Sharp weighted draw: mostly the best, sometimes a close runner-up.
+      const best = Math.max(...options.map((o) => o.utility));
+      const weights = options.map((o) => (o.utility / best) ** AI_TUNING.pickSharpness);
+      let r = Math.random() * weights.reduce((a, b) => a + b, 0);
+      const choice = options.find((_, i) => (r -= weights[i]) <= 0) ?? options[0];
+      const plan = this.buildRailPlan(choice.spot, choice.entry, from);
+      plan.navBudget = navBudget(choice.travel);
       this.rail = plan;
-      if (spot.kind === "ramp") this.debug.rampPlans += 1;
+      if (choice.spot.kind === "ramp") this.debug.rampPlans += 1;
       else this.debug.plans += 1;
       this.target = plan.approach.clone();
       this.targetTimer = 0;
@@ -219,7 +361,8 @@ export class AiNavigator {
       }
       return;
     }
-    // Fallback: roam.
+    // Nothing reachable / everything cooling down: roam.
+    this.debug.roams += 1;
     let dest = new Vector3(
       (Math.random() * 2 - 1) * (this.halfExtent - 1.2),
       0,
@@ -235,28 +378,9 @@ export class AiNavigator {
     if (this.crowd && this.agent >= 0) this.crowd.agentGoto(this.agent, dest);
   }
 
-  private pickWeighted(pool: Spot[], from: Vector3): Spot | null {
-    if (pool.length === 0) return null;
-    // Prefer long thin-rail chains strongly — those are the ones with real sustained grinds.
-    // Distance sweet-spot is wider now; being too picky caused the AI to burn plans on
-    // whatever happened to be 4m away.
-    const scored = pool
-      .map((p) => {
-        const d = Vector3.Distance(p.center, from);
-        const sweet = Math.max(0.2, 1 - Math.abs(d - 4) / 7);
-        const thinBonus = p.thin ? 3.5 : 1;
-        const lengthBonus = 1 + Math.max(0, p.length - 1) * 1.2;
-        return { p, w: sweet * thinBonus * lengthBonus };
-      })
-      .sort((a, b) => b.w - a.w);
-    // Pick from the top 25% — mostly the best, with a little variety so stuck targets don't
-    // deadlock us.
-    const top = scored.slice(0, Math.max(1, Math.ceil(scored.length * 0.25)));
-    return top[Math.floor(Math.random() * top.length)].p;
-  }
-
   /** Writes moveDir / jump requests into the controller. */
   update(ctrl: PlayerController, dt: number) {
+    this.clock += dt;
     if (!this.ready || ctrl.state === "bailed") {
       ctrl.airRailTarget = null;
       return;
@@ -270,6 +394,7 @@ export class AiNavigator {
       this.rail.totalTimer += dt;
       // Hard timeout — if a plan takes too long overall, abandon it.
       if (this.rail.totalTimer > 11) {
+        this.debug.planTimeout += 1;
         this.pickTarget(pos);
         if (!this.rail) return this.cruise(ctrl, dt);
       }
@@ -301,9 +426,10 @@ export class AiNavigator {
         plan.phaseTimer = 0;
         this.debug.reachedApproach += 1;
         this.debug.lastPhase = "lineup";
-      } else if (plan.phaseTimer > 4) {
+      } else if (plan.phaseTimer > plan.navBudget) {
         // Nav timeout — can't reach the approach point. Usually the body is pinned against
         // some geometry. Hard-unstick and pick a different POI entirely.
+        this.debug.navTimeout += 1;
         ctrl.unstick();
         this.pickTarget(ctrl.position);
       }
@@ -330,7 +456,7 @@ export class AiNavigator {
       }
       if (ctrl.grounded && plan.phaseTimer > 0.15) {
         this.debug.rampAirs += 1;
-        this.stat(plan.spot).lands += 1;
+        this.mem(plan.spot).lands += 1;
         this.pickTarget(pos);
       } else if (plan.phaseTimer > 3) {
         this.pickTarget(pos);
@@ -380,12 +506,24 @@ export class AiNavigator {
         plan.phase = "air";
         plan.phaseTimer = 0;
         this.debug.jumpsFired += 1;
-        this.stat(plan.spot).jumps += 1;
+        this.mem(plan.spot).jumps += 1;
         this.debug.lastPhase = "air";
         this.debug.lastJumpSpeed = jumpSpeed;
         this.debug.lastRailTopY = topY;
       } else if (distAlong < -0.4) {
-        this.pickTarget(pos);
+        // Ran past the end without a clean take-off (usually mid U-turn). Loop back to the run-up
+        // once — we're right here, and a second pass usually arrives lined up.
+        this.debug.lineupOverrun += 1;
+        if (plan.retries-- > 0) {
+          plan.phase = "nav";
+          plan.phaseTimer = 0;
+          plan.navBudget = navBudget((this.plugin && this.pathLength(pos, plan.approach)) || Vector3.Distance(pos, plan.approach) * 1.5);
+          this.debug.lastPhase = "nav";
+          if (this.crowd && this.agent >= 0 && this.plugin) {
+            this.crowd.agentTeleport(this.agent, this.plugin.getClosestPoint(pos));
+            this.crowd.agentGoto(this.agent, this.plugin.getClosestPoint(plan.approach));
+          }
+        } else this.pickTarget(pos);
       } else if (plan.phaseTimer > 2.5) {
         // Lineup should finish fast: 2.4m at > 2m/s is barely over a second. Anything
         // past 2.5s means something's wedged — abandon the plan.
@@ -411,7 +549,7 @@ export class AiNavigator {
         // Keep airRailTarget set during grinding too — the controller's Y lock prefers this
         // over raycast-sampled railCenter.y which can oscillate on chamfered rail edges.
         this.debug.airSuccess += 1;
-        this.stat(plan.spot).lands += 1;
+        this.mem(plan.spot).lands += 1;
         this.debug.lastPhase = "grind";
         return;
       }
@@ -468,8 +606,14 @@ export class AiNavigator {
       }
       distToGoal = Vector3.Distance(pos, plan.approach);
     } else if (plan.phase === "lineup") {
-      // Hard override: run straight along axisInward toward the rail end.
-      steer = new Vector3(plan.axisInward.x, 0, plan.axisInward.z);
+      // Pure pursuit onto the run-up line: chase a point 1.5 m ahead of our projection on it, so a
+      // sideways offset closes instead of carrying straight into the take-off.
+      const ax = plan.axisInward;
+      const rel = pos.subtract(plan.endNear);
+      const along = rel.x * ax.x + rel.z * ax.z;
+      const ahead = along + 1.5;
+      const carrot = plan.endNear.add(ax.scale(plan.spot.kind === "grind" ? Math.min(ahead, 0.3) : ahead));
+      steer = new Vector3(carrot.x - pos.x, 0, carrot.z - pos.z);
       distToGoal = Vector3.Distance(pos, plan.endNear);
       targetThrottle = 1; // full gas into the rail
     } else if (plan.phase === "air" && plan.spot.kind === "ramp") {

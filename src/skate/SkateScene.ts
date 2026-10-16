@@ -136,6 +136,7 @@ export class SkateScene {
       onBail: (vel) => {
         this.sfx.bail();
         this.score = Math.max(0, this.score - BAIL_PENALTY);
+        this.ai?.notePoints(-BAIL_PENALTY);
         this.opts.onHud({ bailed: true, score: Math.floor(this.score) });
         void this.bail.trigger(this.player, vel, this.opts.character, this.opts.ride);
       },
@@ -152,6 +153,7 @@ export class SkateScene {
           if (bonus > 0) {
             this.score += bonus;
             this.farmGuard.gain();
+            this.ai?.notePoints(bonus);
             this.opts.onHud({ score: Math.floor(this.score), toast: { text: grindLabel(dur), bonus, t: performance.now() } });
           }
         }
@@ -196,6 +198,7 @@ export class SkateScene {
   private addScore(n: number) {
     this.score += n;
     this.farmGuard.gain();
+    this.ai?.notePoints(n);
     this.opts.onHud({ score: Math.floor(this.score) });
   }
 
@@ -260,6 +263,7 @@ export class SkateScene {
     if (this.player.state === "grinding") {
       this.score += dt * GRIND_POINTS_PER_SEC;
       this.farmGuard.gain();
+      this.ai.notePoints(dt * GRIND_POINTS_PER_SEC);
       this.sfx.setGrindSpeed(this.player.speed);
     }
 
