@@ -1,5 +1,5 @@
 import { PhysicsAggregate } from "@babylonjs/core/Physics/v2/physicsAggregate";
-import { PhysicsShapeType, PhysicsMotionType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
+import { PhysicsShapeType, PhysicsMotionType, PhysicsEventType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { PhysicsRaycastResult } from "@babylonjs/core/Physics/physicsRaycastResult";
 import type { PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
 import type { PhysicsEngine } from "@babylonjs/core/Physics/v2/physicsEngine";
@@ -48,6 +48,8 @@ export interface ControllerEvents {
   onLand?: (fallSpeed: number, airtime: number) => void;
   onBail?: (velocity: Vector3, point: Vector3) => void;
   onGrindChange?: (grinding: boolean) => void;
+  /** Side-on knock that didn't bail; `speed` is the into-surface speed, `metal` for rails. */
+  onImpact?: (speed: number, metal: boolean) => void;
 }
 
 /** Havok rolling-sphere character controller: velocity is projected onto the surface it stands on. */
@@ -131,7 +133,7 @@ export class PlayerController {
     this.body.setLinearDamping(0.05);
     this.body.setAngularDamping(1);
     this.body.setCollisionCallbackEnabled(true);
-    this.body.getCollisionObservable().add((ev) => this.onCollision(ev.normal ?? undefined, ev.point ?? undefined, ev.collidedAgainst?.transformNode?.metadata));
+    this.body.getCollisionObservable().add((ev) => this.onCollision(ev.normal ?? undefined, ev.point ?? undefined, ev.collidedAgainst?.transformNode?.metadata, ev.type));
 
     this.visual = new TransformNode("rider-visual", scene);
     this.ride.root.parent = this.visual;
@@ -582,26 +584,38 @@ export class PlayerController {
     this.railCenter.copyFrom(hit);
   }
 
-  private onCollision(normal: Vector3 | undefined, point: Vector3 | undefined, meta?: { kind?: string; tags?: string[] }) {
+  private onCollision(normal: Vector3 | undefined, point: Vector3 | undefined, meta?: { kind?: string; tags?: string[] }, type?: PhysicsEventType) {
     if (!normal || this.state === "bailed" || this.bailCooldown > 0) return;
     const n = normal;
     const tags = meta?.tags ?? [];
+    const v = this.lastVel;
+    if (this.shouldBail(n, meta?.kind, tags)) {
+      this.bail(v.clone(), point ?? this.collider.position.clone());
+      return;
+    }
+    // Side-on knocks only: floor / rail-top contact is a landing (onLand) or a grind.
+    if (type === PhysicsEventType.COLLISION_STARTED && Math.abs(n.y) < 0.5 && this.state !== "grinding") {
+      const intoSpeed = Math.abs(v.x * n.x + v.z * n.z);
+      if (intoSpeed > 1.2) this.events.onImpact?.(intoSpeed, tags.includes("rail"));
+    }
+  }
+
+  private shouldBail(n: Vector3, kind: string | undefined, tags: string[]): boolean {
     // Rails and grind ledges are intended landing targets — never bail from colliding with them.
     // Side-hits during the air-to-rail approach would otherwise wipe the whole run.
-    if (tags.includes("rail") || tags.includes("grind")) return;
-    const isWall = meta?.kind === "wall" || tags.includes("wall");
+    if (tags.includes("rail") || tags.includes("grind")) return false;
+    const isWall = kind === "wall" || tags.includes("wall");
     // Ramps/bowls are meant to be steep — only their vertical backs count as walls.
     const steepLimit = tags.includes("ramp") ? 0.12 : isWall ? 0.5 : 0.35;
-    if (Math.abs(n.y) > steepLimit) return;
+    if (Math.abs(n.y) > steepLimit) return false;
     const v = this.lastVel;
     const hSpeed = Math.hypot(v.x, v.z);
     // AI gets a higher bail threshold so cornering grazes don't wipe the show-reel.
     const bailFloor = this.driver === "ai" ? Math.max(this.tuning.bailSpeed + 1.4, 4.6) : this.tuning.bailSpeed;
-    if (hSpeed < bailFloor) return;
+    if (hSpeed < bailFloor) return false;
     const into = Math.abs(v.x * n.x + v.z * n.z) / Math.max(hSpeed, 1e-3);
     const intoFloor = this.driver === "ai" ? 0.78 : 0.6;
-    if (into < intoFloor) return;
-    this.bail(v.clone(), point ?? this.collider.position.clone());
+    return into >= intoFloor;
   }
 
   bail(velocity: Vector3, point: Vector3) {

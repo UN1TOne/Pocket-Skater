@@ -8,6 +8,7 @@ import { createEngine, enableHavok } from "@/engine/createEngine";
 import { createWorld, type World } from "@/engine/world/createWorld";
 import { Park, gridToWorld, rotationY } from "@/engine/world/park";
 import { gameInput } from "@/engine/input";
+import { Sfx } from "@/engine/audio/Sfx";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import { footprintCells, type GameHud } from "@/store/useGameStore";
 import type { CharacterId, MapData, PlayMode, RideId } from "@/types/game";
@@ -33,6 +34,7 @@ export class SkateScene {
   player!: PlayerController;
   ai!: AiNavigator;
   bail!: Bail;
+  readonly sfx = new Sfx();
   mode: PlayMode;
   paused = false;
   private score = 0;
@@ -213,15 +215,22 @@ export class SkateScene {
 
     this.bail = new Bail(scene, (id) => this.park.loader.instantiate(id, `bail-${id}`));
     this.player = new PlayerController(scene, charInst, rideInst, this.opts.ride, spawn, {
-      onLand: (_fall, airtime) => {
+      onJump: () => this.sfx.jump(),
+      onLand: (fall, airtime) => {
         if (airtime > 0.3) this.addScore(Math.round(airtime * 40));
+        // Rail landings get the grind clank instead of a ground thud.
+        if (fall > 1.5 && !this.player.groundTags.includes("rail")) this.sfx.impact(fall / 7);
       },
+      onImpact: (speed, metal) => this.sfx.impact(speed / 5, metal),
       onBail: (vel) => {
+        this.sfx.bail();
         this.score = Math.max(0, this.score - 50);
         this.opts.onHud({ bailed: true, score: Math.floor(this.score) });
         void this.bail.trigger(this.player, vel, this.opts.character, this.opts.ride);
       },
       onGrindChange: (g) => {
+        if (g) this.sfx.grindStart();
+        else this.sfx.grindStop();
         this.opts.onHud({ grinding: g });
         if (g) {
           this.grindStart = performance.now();
@@ -329,6 +338,7 @@ export class SkateScene {
   private tick() {
     if (!this.player) return;
     const dt = Math.min(0.05, this.engine.getDeltaTime() / 1000);
+    this.sfx.setPaused(this.paused);
     if (this.paused) return;
 
     if (this.mode === "manual") {
@@ -354,7 +364,10 @@ export class SkateScene {
     }
 
     this.player.update(dt);
-    if (this.player.state === "grinding") this.score += dt * 12;
+    if (this.player.state === "grinding") {
+      this.score += dt * 12;
+      this.sfx.setGrindSpeed(this.player.speed);
+    }
 
     if (this.bail.update(dt)) {
       this.doRespawn();
@@ -378,6 +391,7 @@ export class SkateScene {
     this.disposed = true;
     window.removeEventListener("resize", this.onResize);
     this.engine.stopRenderLoop();
+    this.sfx.dispose();
     this.ai?.dispose();
     this.bail?.dispose();
     this.player?.dispose();
