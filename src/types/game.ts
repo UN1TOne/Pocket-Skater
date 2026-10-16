@@ -15,6 +15,12 @@ export interface CatalogItem {
   footprint: { w: number; d: number };
   /** Gameplay semantics used by the skate scene & AI. */
   tags: Array<"ramp" | "rail" | "grind" | "flat" | "wall" | "decor" | "floor" | "nature">;
+  /**
+   * World-Y height of this piece's flat top surface. When defined, OTHER pieces can be
+   * placed on top of this one (stacking) — the new piece gets lifted by this amount.
+   * Undefined means the piece has no useful top (ramps, rails, slopes etc.).
+   */
+  stackTop?: number;
 }
 
 /** Grid rotation in quarter turns (0, 90, 180, 270 degrees). */
@@ -27,6 +33,8 @@ export interface PlacedItem {
   x: number;
   z: number;
   rot: Rotation;
+  /** Stacking offset in world Y units. 0 (or undefined) = on the ground. */
+  y?: number;
 }
 
 export interface MapData {

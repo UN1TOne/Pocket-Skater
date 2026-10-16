@@ -33,7 +33,7 @@ export interface ParkPiece {
 }
 
 const samePlacement = (a: PlacedItem, b: PlacedItem) =>
-  a.itemId === b.itemId && a.x === b.x && a.z === b.z && a.rot === b.rot;
+  a.itemId === b.itemId && a.x === b.x && a.z === b.z && a.rot === b.rot && (a.y ?? 0) === (b.y ?? 0);
 
 /** Instantiates a MapData into the world; the Builder uses it live, the Skate scene builds it once. */
 export class Park {
@@ -71,6 +71,8 @@ export class Park {
     // or a tree base z-fights with the ground. Lift them a hair above the slab so the
     // depth test picks the piece's own geometry first.
     if (def.category === "exteriors") pos.y = 0.02;
+    // Stacking: pieces placed on top of a stackable base carry an additional world-Y offset.
+    if (placed.y) pos.y += placed.y;
     inst.root.position = pos;
     inst.root.rotation.y = rotationY(placed.rot);
     inst.root.metadata = { ...inst.root.metadata, uid: placed.uid, tags: def.tags };
@@ -98,7 +100,11 @@ export class Park {
       const existing = this.pieces.get(item.uid);
       if (!existing) continue;
       if (samePlacement(existing.placed, item)) continue;
-      existing.instance.root.position = gridToWorld(item.itemId, item.x, item.z, item.rot, this.gridSize);
+      const def = CATALOG_BY_ID[item.itemId];
+      const pos = gridToWorld(item.itemId, item.x, item.z, item.rot, this.gridSize);
+      if (def?.category === "exteriors") pos.y = 0.02;
+      if (item.y) pos.y += item.y;
+      existing.instance.root.position = pos;
       existing.instance.root.rotation.y = rotationY(item.rot);
       existing.placed = item;
     }

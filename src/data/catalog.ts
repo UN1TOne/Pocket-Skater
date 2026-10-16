@@ -4,14 +4,14 @@ import type { CatalogItem, ItemCategory } from "@/types/game";
 export const CATALOG: CatalogItem[] = [
   { id: "ramp", label: "Kicker", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
   { id: "ramp-rail", label: "Kicker + Rail", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp", "grind"] },
-  { id: "half-pipe", label: "Quarter Pipe", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
-  { id: "half-pipe-low", label: "Low Quarter", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
+  { id: "half-pipe", label: "Quarter Pipe", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp"], stackTop: 1.0 },
+  { id: "half-pipe-low", label: "Low Quarter", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp"], stackTop: 0.5 },
   { id: "slope-smooth", label: "Long Slope", category: "ramps", footprint: { w: 1, d: 2 }, tags: ["ramp"] },
   { id: "steps", label: "Steps", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
   { id: "steps-rail", label: "Steps + Rail", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["ramp", "grind"] },
-  { id: "structure-platform", label: "Platform", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["wall", "flat"] },
-  { id: "structure-wood", label: "Wood Tower", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["wall"] },
-  { id: "structure-wood-platform", label: "Wood Deck", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["wall", "flat"] },
+  { id: "structure-platform", label: "Platform", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["wall", "flat"], stackTop: 1.0 },
+  { id: "structure-wood", label: "Wood Tower", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["wall"], stackTop: 1.0 },
+  { id: "structure-wood-platform", label: "Wood Deck", category: "ramps", footprint: { w: 1, d: 1 }, tags: ["wall", "flat"], stackTop: 0.6 },
 
   // Rails
   { id: "rail-low", label: "Low Rail", category: "rails", footprint: { w: 1, d: 1 }, tags: ["rail", "grind"] },
@@ -29,22 +29,22 @@ export const CATALOG: CatalogItem[] = [
   { id: "bowl-corner-inner-low", label: "Low Inner", category: "bowls", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
   { id: "bowl-corner-outer", label: "Outer Corner", category: "bowls", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
   { id: "bowl-corner-outer-low", label: "Low Outer", category: "bowls", footprint: { w: 1, d: 1 }, tags: ["ramp"] },
-  { id: "bowl-platform", label: "Bowl Deck", category: "bowls", footprint: { w: 1, d: 1 }, tags: ["wall", "flat"] },
+  { id: "bowl-platform", label: "Bowl Deck", category: "bowls", footprint: { w: 1, d: 1 }, tags: ["wall", "flat"], stackTop: 0.5 },
 
   // Obstacles
-  { id: "obstacle-box", label: "Box", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"] },
-  { id: "obstacle-box-grind", label: "Grind Box", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["grind"] },
-  { id: "obstacle-middle", label: "Ledge", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"] },
+  { id: "obstacle-box", label: "Box", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"], stackTop: 0.5 },
+  { id: "obstacle-box-grind", label: "Grind Box", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["grind"], stackTop: 0.5 },
+  { id: "obstacle-middle", label: "Ledge", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"], stackTop: 0.4 },
   { id: "obstacle-middle-rail", label: "Ledge + Rail", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"] },
   { id: "obstacle-end", label: "Ledge End", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["ramp", "grind"] },
-  { id: "obstacle-corner", label: "Ledge Corner", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"] },
+  { id: "obstacle-corner", label: "Ledge Corner", category: "obstacles", footprint: { w: 1, d: 1 }, tags: ["flat", "grind"], stackTop: 0.4 },
 
   // Props
   { id: "bench", label: "Bench", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "wall"] },
   { id: "benches", label: "Bleachers", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "wall"] },
   { id: "fence", label: "Fence", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "wall"] },
-  { id: "pallet", label: "Pallet", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "flat"] },
-  { id: "plank", label: "Plank", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "flat"] },
+  { id: "pallet", label: "Pallet", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "flat"], stackTop: 0.15 },
+  { id: "plank", label: "Plank", category: "props", footprint: { w: 1, d: 1 }, tags: ["decor", "flat"], stackTop: 0.08 },
   { id: "vehicle", label: "Taxi", category: "props", footprint: { w: 2, d: 1 }, tags: ["decor", "wall"] },
 
   // Floors
@@ -66,12 +66,12 @@ export const CATALOG: CatalogItem[] = [
   { id: "exterior-patch-dirt", label: "Dirt Patch", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
   { id: "exterior-fence", label: "Wood Fence", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
   { id: "exterior-bridge", label: "Bridge", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
-  { id: "exterior-platform", label: "Platform", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-platform", label: "Platform", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"], stackTop: 0.5 },
   { id: "exterior-ladder", label: "Ladder", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
   { id: "exterior-flag", label: "Flag", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
   { id: "exterior-tent", label: "Tent", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
   { id: "exterior-target", label: "Target", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
-  { id: "exterior-building-platform", label: "Lookout Deck", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
+  { id: "exterior-building-platform", label: "Lookout Deck", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"], stackTop: 1.0 },
   { id: "exterior-building-roof", label: "Lookout Roof", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
   { id: "exterior-building-structure", label: "Lookout Posts", category: "exteriors", footprint: { w: 1, d: 1 }, tags: ["decor", "nature"] },
 ];
@@ -89,11 +89,7 @@ export const CATEGORIES: Array<{ id: ItemCategory; label: string; emoji: string 
 ];
 
 export const previewUrl = (id: string) => `/assets/images/preview/${id}.png`;
-// TODO(rename): the folder on disk is currently `Exteriors` (capital E) because Vite's dev
-// watcher is holding a lock. Once dev is restarted the folder can be renamed to lowercase
-// `exteriors` and this constant can be dropped. The modelUrl() uses this directly so there's
-// a single place to flip when the rename happens.
-const EXTERIORS_DIR = "Exteriors";
+const EXTERIORS_DIR = "exteriors";
 export const modelUrl = (id: string): string => {
   const item = CATALOG_BY_ID[id];
   if (item?.category === "exteriors") {

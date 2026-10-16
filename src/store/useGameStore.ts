@@ -124,7 +124,13 @@ export const useGameStore = create<GameState>()(
       builderRotation: 0,
       builderTool: "place",
       setBuilderCategory: (builderCategory) => set({ builderCategory }),
-      selectItem: (selectedItemId) => set({ selectedItemId, builderTool: "place" }),
+      selectItem: (id) =>
+        set((s) => ({
+          // Tap the same tile a second time to deselect — the ghost that follows the cursor
+          // was disruptive otherwise.
+          selectedItemId: s.selectedItemId === id ? null : id,
+          builderTool: "place",
+        })),
       rotateSelection: () => set((s) => ({ builderRotation: ((s.builderRotation + 1) % 4) as Rotation })),
       setBuilderTool: (builderTool) => set({ builderTool }),
 
@@ -135,8 +141,8 @@ export const useGameStore = create<GameState>()(
         if (!def) return false;
         const isExterior = def.category === "exteriors";
         const cells = footprintCells(selectedItemId, x, z, builderRotation);
-        // Bounds + zone rules. Exteriors live in the outer ring only; everything else lives
-        // inside the skate grid only. Mixed-footprint pieces straddling the border are rejected.
+
+        // Bounds + zone rules (same as before — exteriors live outside, others inside).
         if (isExterior) {
           const inOuterBounds = cells.every(
             ([cx, cz]) =>
@@ -146,32 +152,57 @@ export const useGameStore = create<GameState>()(
               cz < customMap.size + OUTER_PADDING,
           );
           if (!inOuterBounds) return false;
-          // Must be fully outside the inner grid (never overlapping a skate cell).
-          if (!cells.every(([cx, cz]) => cx < 0 || cz < 0 || cx >= customMap.size || cz >= customMap.size)) {
-            return false;
-          }
-          const occupied = new Set<string>();
-          for (const [cx, cz] of cells) occupied.add(`${cx},${cz}`);
-          const outerItems = customMap.outerItems ?? [];
-          const remaining = outerItems.filter(
-            (it) => !footprintCells(it.itemId, it.x, it.z, it.rot).some(([cx, cz]) => occupied.has(`${cx},${cz}`)),
-          );
-          const placed: PlacedItem = { uid: uid(), itemId: selectedItemId, x, z, rot: builderRotation };
-          set({ customMap: { ...customMap, outerItems: [...remaining, placed] } });
+          if (!cells.every(([cx, cz]) => cx < 0 || cz < 0 || cx >= customMap.size || cz >= customMap.size)) return false;
+        } else {
+          if (!allCellsInner(cells, customMap.size)) return false;
+        }
+
+        const sourceKey = isExterior ? "outerItems" : "items";
+        const sourceArray: PlacedItem[] = isExterior ? customMap.outerItems ?? [] : customMap.items;
+        const cellKey = (cx: number, cz: number) => `${cx},${cz}`;
+        const cellKeys = new Set(cells.map(([cx, cz]) => cellKey(cx, cz)));
+
+        // Stacking: find any piece beneath whose footprint fully covers our new piece AND
+        // has a defined stackTop (i.e. a flat enough roof). The AI picks the highest matching
+        // base so chain-stacking works (platform on platform on ground).
+        const stackableBases = sourceArray.filter((it) => {
+          const bDef = CATALOG_BY_ID[it.itemId];
+          if (!bDef?.stackTop) return false;
+          const bCells = footprintCells(it.itemId, it.x, it.z, it.rot);
+          return cells.every(([cx, cz]) => bCells.some(([bx, bz]) => bx === cx && bz === cz));
+        });
+
+        if (stackableBases.length > 0) {
+          // Pick the base whose top sits highest; stack on it, don't remove anything.
+          const base = stackableBases.reduce((best, it) => {
+            const topOf = (p: PlacedItem) => (p.y ?? 0) + (CATALOG_BY_ID[p.itemId]?.stackTop ?? 0);
+            return topOf(it) > topOf(best) ? it : best;
+          });
+          const stackY = (base.y ?? 0) + (CATALOG_BY_ID[base.itemId]?.stackTop ?? 0);
+          // If the user is placing on a spot that already has a piece at the SAME stack level,
+          // replace that one (don't accumulate forever).
+          const remaining = sourceArray.filter((it) => {
+            if ((it.y ?? 0) !== stackY) return true;
+            const itCells = footprintCells(it.itemId, it.x, it.z, it.rot);
+            return !itCells.some(([cx, cz]) => cellKeys.has(cellKey(cx, cz)));
+          });
+          const placed: PlacedItem = { uid: uid(), itemId: selectedItemId, x, z, rot: builderRotation, y: stackY };
+          set({ customMap: { ...customMap, [sourceKey]: [...remaining, placed] } });
           return true;
         }
-        if (!allCellsInner(cells, customMap.size)) return false;
+
+        // No stackable base beneath — fall back to classic "replace same-layer" semantics.
+        // Floors stack with anything; other categories replace whatever shares their footprint
+        // at ground level only (don't touch stacked pieces).
         const isFloor = def.category === "floors";
-        // Floors stack with anything; other items replace whatever shares their footprint.
-        const occupied = new Set<string>();
-        for (const [cx, cz] of cells) occupied.add(`${cx},${cz}`);
-        const remaining = customMap.items.filter((it) => {
+        const remaining = sourceArray.filter((it) => {
+          if ((it.y ?? 0) !== 0) return true; // keep anything stacked up
           const itIsFloor = CATALOG_BY_ID[it.itemId]?.category === "floors";
           if (itIsFloor !== isFloor) return true;
-          return !footprintCells(it.itemId, it.x, it.z, it.rot).some(([cx, cz]) => occupied.has(`${cx},${cz}`));
+          return !footprintCells(it.itemId, it.x, it.z, it.rot).some(([cx, cz]) => cellKeys.has(cellKey(cx, cz)));
         });
         const placed: PlacedItem = { uid: uid(), itemId: selectedItemId, x, z, rot: builderRotation };
-        set({ customMap: { ...customMap, items: [...remaining, placed] } });
+        set({ customMap: { ...customMap, [sourceKey]: [...remaining, placed] } });
         return true;
       },
 
@@ -179,20 +210,23 @@ export const useGameStore = create<GameState>()(
         const { customMap } = get();
         const touches = (it: PlacedItem) =>
           footprintCells(it.itemId, it.x, it.z, it.rot).some(([cx, cz]) => cx === x && cz === z);
-        // Prefer removing an outer-ring piece if the tap landed on one, else target the inner stack.
-        const outerHit = [...(customMap.outerItems ?? [])].reverse().find(touches);
+        // Highest-stacked piece first — tapping removes what the user actually sees on top.
+        const pickTop = (arr: PlacedItem[]) =>
+          arr.filter(touches).sort((a, b) => (b.y ?? 0) - (a.y ?? 0))[0] ?? null;
+
+        const outerHit = pickTop(customMap.outerItems ?? []);
         if (outerHit) {
           set({
             customMap: { ...customMap, outerItems: (customMap.outerItems ?? []).filter((it) => it.uid !== outerHit.uid) },
           });
           return;
         }
-        const hit = [...customMap.items]
-          .reverse()
-          .sort((a, b) => Number(CATALOG_BY_ID[a.itemId]?.category === "floors") - Number(CATALOG_BY_ID[b.itemId]?.category === "floors"))
-          .find(touches);
-        if (!hit) return;
-        set({ customMap: { ...customMap, items: customMap.items.filter((it) => it.uid !== hit.uid) } });
+        const innerHits = customMap.items.filter(touches);
+        if (innerHits.length === 0) return;
+        // Prefer non-floors so a tap doesn't peel the floor out from under a stack.
+        const nonFloors = innerHits.filter((it) => CATALOG_BY_ID[it.itemId]?.category !== "floors");
+        const target = (nonFloors.length > 0 ? nonFloors : innerHits).sort((a, b) => (b.y ?? 0) - (a.y ?? 0))[0];
+        set({ customMap: { ...customMap, items: customMap.items.filter((it) => it.uid !== target.uid) } });
       },
 
       builderSheetOpen: true,
