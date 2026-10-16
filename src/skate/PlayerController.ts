@@ -492,22 +492,45 @@ export class PlayerController {
     const def = itemId ? CATALOG_BY_ID[itemId] : undefined;
     const hit = this.ray.hitPointWorld;
 
-    // Curved rails: ignore the piece's local +Z axis and derive the tangent from the arc
-    // itself — perpendicular to the radial from the piece's center to the hit point. This
-    // keeps the rider on the rail through 90° bends instead of flying off along a straight
-    // chord. Direction is chosen to match the rider's current velocity so they keep going.
+    // Curved rails: perp-radial gives tangent magnitude, but the sign (CCW vs CW around
+    // the arc) depends on model-authoring convention and is ambiguous when velocity ⊥
+    // tangent at entry (dot≈0 → no flip → wrong half-tangent). To resolve: walk a small
+    // ARC STEP (dθ≈17°) in each rotational direction and raycast — the step that lands on
+    // the same piece is the arc's real continuation. Angular stepping (vs straight-line
+    // probing) stays at the arc radius so the probe doesn't fall off a thin curved rail
+    // just because the arc is bending.
     if (def?.curved) {
       const center = node.getAbsolutePosition();
       const dx = hit.x - center.x;
       const dz = hit.z - center.z;
       const rl = Math.hypot(dx, dz);
       if (rl > 0.05) {
+        const dTheta = 0.3;
+        const probeArc = (sign: number, result: PhysicsRaycastResult): boolean => {
+          const c = Math.cos(dTheta * sign);
+          const s = Math.sin(dTheta * sign);
+          const nx = dx * c - dz * s;
+          const nz = dx * s + dz * c;
+          const px = center.x + nx;
+          const pz = center.z + nz;
+          const from = new Vector3(px, hit.y + 0.3, pz);
+          const to = new Vector3(px, hit.y - 0.4, pz);
+          this.physics.raycastToRef(from, to, result);
+          if (!result.hasHit) return false;
+          const hitMeta = result.body?.transformNode?.metadata as { uid?: string } | undefined;
+          return !uid || hitMeta?.uid === uid;
+        };
+        const ccwOn = probeArc(+1, this.rayFwd);
+        const cwOn = probeArc(-1, this.rayBwd);
         let tx = -dz / rl;
         let tz = dx / rl;
         const v = this.lastVel;
-        if (tx * v.x + tz * v.z < 0) {
-          tx = -tx;
-          tz = -tz;
+        if (cwOn && !ccwOn) {
+          tx = -tx; tz = -tz;
+        } else if (ccwOn && cwOn) {
+          if (tx * v.x + tz * v.z < 0) { tx = -tx; tz = -tz; }
+        } else if (!ccwOn && !cwOn) {
+          if (tx * v.x + tz * v.z < 0) { tx = -tx; tz = -tz; }
         }
         this.railDir = new Vector3(tx, 0, tz);
         this.railCenter.copyFrom(hit);
