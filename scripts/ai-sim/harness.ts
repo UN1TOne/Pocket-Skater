@@ -65,6 +65,7 @@ export interface RunResult {
   ai: Record<string, number | string>;
   spotStats: Record<string, { attempts: number; points: number; jumps: number; lands: number }>;
   spotInfo: Record<string, string>;
+  phaseTime: Record<string, number>;
   /** Where bails happened + catalog ids within one cell — for diagnosing bail hotspots. */
   bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }>;
   /** Airtimes of landings, keyed by the catalog id launched from. */
@@ -164,7 +165,7 @@ async function main() {
   const launchSpeeds: Record<string, number[]> = {};
   let launchSpeed = 0;
   const bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }> = [];
-  const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, bails: 0, unsticks: 0, slowSec: 0 };
+  const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, airSec: 0, bails: 0, unsticks: 0, slowSec: 0 };
   const stub = (): Instance => ({ root: new TransformNode("stub", scene), meshes: [], animationGroups: [], dispose() {} });
   const player = new PlayerController(scene, stub(), stub(), "skateboard", findSpawn(map), {
     onLand: (_fall, airtime) => {
@@ -179,6 +180,7 @@ async function main() {
         score += air;
         ai.notePoints(air);
         m.airs += 1;
+        m.airSec += airtime;
         if (launchUid && skateable.has(launchUid)) used.add(launchUid);
       }
     },
@@ -309,6 +311,7 @@ async function main() {
     coverage: cellTime.filter((t) => t > 0).length / cellTime.length,
     ai: { ...ai.debug },
     spotStats: Object.fromEntries(ai.spotStats),
+    phaseTime: { ...ai.phaseTime },
     spotInfo: Object.fromEntries(spots.map((s) => [s.id, `${s.pieces.map((u) => itemOf.get(u)).join('+')} len=${s.length.toFixed(1)} h=${s.height.toFixed(2)} entries=${s.entries.map((e) => `(${e.start.x.toFixed(1)},${e.start.z.toFixed(1)})→(${e.end.x.toFixed(1)},${e.end.z.toFixed(1)})`).join(' ')}`])),
     bailSites,
     longGrinds,

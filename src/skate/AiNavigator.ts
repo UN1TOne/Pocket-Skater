@@ -51,6 +51,8 @@ export const AI_TUNING = {
   coolDownSec: 12,
   /** Exponent on utility/best for the weighted draw: higher = greedier. */
   pickSharpness: 4,
+  /** Steer straight at a run-up start when the way is clear instead of trailing the crowd agent (1 = on). */
+  directNav: 1,
 };
 /** Board clearance over a rail top at the jump apex (m). */
 const RAIL_CLEARANCE = 0.1;
@@ -63,6 +65,19 @@ const LIP_LEAD = 0.2;
  * (coping height + half a radius on the near-vertical wall), still rising.
  */
 const COPING_LEAD = 0.15;
+// Flow entry: joining a run-up mid-way instead of driving to its start point first.
+const FLOW_MIN_SPEED = 1.5;
+const FLOW_MIN_ALIGN = 0.7;
+/** Need at least this much run-up left (m) to settle the line before the take-off. */
+const FLOW_MIN_LEAD = 0.6;
+const FLOW_MAX_LATERAL = 0.5;
+
+/** Unit XZ direction of `v`, or null when it's shorter than `min`. */
+function flatUnit(v: Vector3, min: number): Vector3 | null {
+  const l = Math.hypot(v.x, v.z);
+  return l >= min ? new Vector3(v.x / l, 0, v.z / l) : null;
+}
+
 /** Time allowed to drive `metres` of navmesh path to a run-up before treating it as stuck. */
 const navBudget = (metres: number) => 2.5 + metres / 2;
 
@@ -129,6 +144,8 @@ export class AiNavigator {
   debugMesh: Mesh | null = null;
   /** What the AI has learned per spot; drives target choice (and the eval harness reads it). */
   readonly spotStats = new Map<string, SpotMemory>();
+  /** Seconds spent per plan phase ("grind-nav", "ramp-air", "noPlan", …) — diagnostics. */
+  readonly phaseTime: Record<string, number> = {};
   /** AI-local clock (s) for novelty / cooldowns. */
   private clock = 0;
   /** Points earned since the current plan started. */
@@ -155,6 +172,8 @@ export class AiNavigator {
     cooldowns: 0,
     roams: 0,
     navTimeout: 0,
+    flowEntries: 0,
+    directNavFrames: 0,
     lineupOverrun: 0,
     planTimeout: 0,
     bailed: 0,
@@ -263,6 +282,39 @@ export class AiNavigator {
     let len = Vector3.Distance(from, path[0]);
     for (let i = 1; i < path.length; i++) len += Vector3.Distance(path[i - 1], path[i]);
     return len;
+  }
+
+  /**
+   * Already rolling down this plan's run-up line, the right way and with speed? Then skip the trip
+   * back to the exact start point and take the run-up from here.
+   */
+  private onRunUp(ctrl: PlayerController, plan: RailPlan): boolean {
+    const v = ctrl.body.getLinearVelocity();
+    const speed = Math.hypot(v.x, v.z);
+    if (!ctrl.grounded || speed < FLOW_MIN_SPEED) return false;
+    const dir = plan.axisInward;
+    if ((v.x * dir.x + v.z * dir.z) / speed < FLOW_MIN_ALIGN) return false;
+    const rel = ctrl.position.subtract(plan.endNear);
+    const along = rel.x * dir.x + rel.z * dir.z; // negative = before the take-off end
+    const runUp = Math.hypot(plan.endNear.x - plan.approach.x, plan.endNear.z - plan.approach.z);
+    const lateral = Math.abs(rel.x * dir.z - rel.z * dir.x);
+    return along < -FLOW_MIN_LEAD && along > -(runUp + 1.5) && lateral < FLOW_MAX_LATERAL;
+  }
+
+  /** Rider-wide corridor from `from` to `to` at board and body height hits nothing. */
+  private clearLine(ctrl: PlayerController, from: Vector3, to: Vector3): boolean {
+    const d = flatUnit(to.subtract(from), 0.05);
+    if (!d) return true;
+    const perp = new Vector3(-d.z, 0, d.x);
+    for (const h of [0.15, 0.4]) {
+      for (const off of [-0.22, 0, 0.22]) {
+        const a = new Vector3(from.x + perp.x * off, h, from.z + perp.z * off);
+        const b = new Vector3(to.x + perp.x * off, h, to.z + perp.z * off);
+        this.physics.raycastToRef(a, b, this.whisker);
+        if (this.whisker.hasHit && this.whisker.body !== ctrl.body) return false;
+      }
+    }
+    return true;
   }
 
   /** Memory for `spot`, created on first use. */
@@ -404,6 +456,9 @@ export class AiNavigator {
   /** Writes moveDir / jump requests into the controller. */
   update(ctrl: PlayerController, dt: number) {
     this.clock += dt;
+    // Where the time goes (diagnostics): current plan phase, or idle/bailed.
+    const phaseKey = ctrl.state === "bailed" ? "bailed" : this.rail ? `${this.rail.spot.kind}-${this.rail.phase}` : "noPlan";
+    this.phaseTime[phaseKey] = (this.phaseTime[phaseKey] ?? 0) + dt;
     if (!this.ready || ctrl.state === "bailed") {
       ctrl.airRailTarget = null;
       return;
@@ -444,7 +499,8 @@ export class AiNavigator {
 
     if (plan.phase === "nav") {
       const dist = Vector3.Distance(pos, plan.approach);
-      if (dist < 1.0) {
+      if (dist < 1.0 || this.onRunUp(ctrl, plan)) {
+        if (dist >= 1.0) this.debug.flowEntries += 1;
         plan.phase = "lineup";
         plan.phaseTimer = 0;
         this.debug.reachedApproach += 1;
@@ -630,7 +686,12 @@ export class AiNavigator {
     let targetThrottle = 1;
 
     if (plan.phase === "nav") {
-      if (this.crowd && this.agent >= 0 && this.plugin) {
+      if (AI_TUNING.directNav && this.clearLine(ctrl, pos, plan.approach)) {
+        // Open ground straight to the run-up: drive it ourselves. The crowd agent is slower than
+        // the rider (4.6 vs 5.2 m/s) and brakes into its goal.
+        steer = plan.approach.subtract(pos);
+        this.debug.directNavFrames += 1;
+      } else if (this.crowd && this.agent >= 0 && this.plugin) {
         const agentPos = this.crowd.getAgentPosition(this.agent);
         const lag = Vector3.Distance(agentPos, pos);
         if (lag > 2.4) {

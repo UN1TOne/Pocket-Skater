@@ -153,6 +153,8 @@ function summarize(runs) {
       grindSecPerMin: perMin("grindSec"),
       longestGrind: mean((r) => r.longestGrind),
       airsPerMin: perMin("airs"),
+      /** Share of the run spent in a scoring trick (grinding, or airborne on an air that scored). */
+      trickPct: mean((r) => (((r.grindSec ?? 0) + (r.airSec ?? 0)) / r.seconds) * 100),
       bailsPerMin: perMin("bails"),
       unsticksPerMin: perMin("unsticks"),
       slowPct: mean((r) => (r.slowSec / r.seconds) * 100),
@@ -177,6 +179,7 @@ function printTable(summary, baseline) {
     ["grindSecPerMin", "grind s/min", 1, +1],
     ["longestGrind", "longest s", 2, +1],
     ["airsPerMin", "airs/min", 1, +1],
+    ["trickPct", "trick %", 0, +1],
     ["railLandPct", "rail land %", 0, +1],
     ["spotsPct", "spots %", 0, +1],
     ["coveragePct", "cover %", 0, +1],
