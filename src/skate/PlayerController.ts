@@ -65,6 +65,12 @@ export class PlayerController {
   airtime = 0;
   /** Manual vs AI driving — AI gets more forgiving bail thresholds. */
   driver: "manual" | "ai" = "manual";
+  /**
+   * External pull target used by the AI when jumping toward a known rail. While airborne,
+   * velocity is pulled aggressively toward this XZ position + downward toward its Y. Cleared
+   * on grind-start, bail, or when the AI gives up on the plan.
+   */
+  airRailTarget: { x: number; y: number; z: number } | null = null;
   private railDir: Vector3 | null = null;
   private railCenter = new Vector3();
   private railIsThin = false;
@@ -172,27 +178,42 @@ export class PlayerController {
     const onThinRail = this.grounded && this.railIsThin && this.railDir !== null && this.groundTags.includes("rail");
     this.body.setGravityFactor(onThinRail ? 0 : 1);
 
-    // Air-to-rail magnet: while airborne, if a rail is just below us, nudge our x/z toward
-    // the rail center and bias velocity downward so we actually land on it instead of
-    // sailing past. Makes AI jumps onto rails viable and manual approaches more forgiving.
-    if (!this.grounded && vel.y < 2) {
-      const sniff = new PhysicsRaycastResult();
-      this.physics.raycastToRef(
-        this.collider.position,
-        this.collider.position.add(new Vector3(0, -1.2, 0)),
-        sniff,
-      );
-      if (sniff.hasHit && sniff.body !== this.body) {
-        const meta = sniff.body?.transformNode?.metadata as { tags?: string[] } | undefined;
-        const tags = meta?.tags ?? [];
-        if (tags.includes("rail")) {
-          const target = sniff.hitPointWorld;
-          const dx = target.x - this.collider.position.x;
-          const dz = target.z - this.collider.position.z;
-          vel.x += dx * 14 * dt;
-          vel.z += dz * 14 * dt;
-          if (vel.y > -3) vel.y -= 18 * dt;
-          this.body.setLinearVelocity(vel);
+    // Air-to-rail magnet. Two modes:
+    //  1. Explicit (AI): airRailTarget is set — pull hard toward it, both XZ and down toward Y.
+    //  2. Passive: raycast straight down and nudge toward a rail directly below (manual helper).
+    if (!this.grounded) {
+      const aim = this.airRailTarget;
+      if (aim) {
+        const dx = aim.x - this.collider.position.x;
+        const dz = aim.z - this.collider.position.z;
+        const dyToRail = this.collider.position.y - (aim.y + this.tuning.radius * 0.5);
+        // Strong XZ pull — accel scales with distance but caps so we don't flip velocity.
+        vel.x += dx * 26 * dt;
+        vel.z += dz * 26 * dt;
+        // Downward bias once we're above the rail — simulates a "snap down" after the ollie.
+        if (dyToRail > 0 && vel.y > -3.5) vel.y -= 28 * dt;
+        // Soft ascent damping so we don't rocket way past the rail top.
+        if (vel.y > 1.5 && dyToRail > -0.15) vel.y *= Math.max(0, 1 - 2.5 * dt);
+        this.body.setLinearVelocity(vel);
+      } else if (vel.y < 2) {
+        const sniff = new PhysicsRaycastResult();
+        this.physics.raycastToRef(
+          this.collider.position,
+          this.collider.position.add(new Vector3(0, -1.4, 0)),
+          sniff,
+        );
+        if (sniff.hasHit && sniff.body !== this.body) {
+          const meta = sniff.body?.transformNode?.metadata as { tags?: string[] } | undefined;
+          const tags = meta?.tags ?? [];
+          if (tags.includes("rail") || tags.includes("grind")) {
+            const target = sniff.hitPointWorld;
+            const dx = target.x - this.collider.position.x;
+            const dz = target.z - this.collider.position.z;
+            vel.x += dx * 16 * dt;
+            vel.z += dz * 16 * dt;
+            if (vel.y > -3) vel.y -= 20 * dt;
+            this.body.setLinearVelocity(vel);
+          }
         }
       }
     }
@@ -424,6 +445,9 @@ export class PlayerController {
     if (!normal || this.state === "bailed" || this.bailCooldown > 0) return;
     const n = normal;
     const tags = meta?.tags ?? [];
+    // Rails and grind ledges are intended landing targets — never bail from colliding with them.
+    // Side-hits during the air-to-rail approach would otherwise wipe the whole run.
+    if (tags.includes("rail") || tags.includes("grind")) return;
     const isWall = meta?.kind === "wall" || tags.includes("wall");
     // Ramps/bowls are meant to be steep — only their vertical backs count as walls.
     const steepLimit = tags.includes("ramp") ? 0.12 : isWall ? 0.5 : 0.35;
@@ -443,6 +467,7 @@ export class PlayerController {
     if (this.state === "bailed") return;
     this.state = "bailed";
     this.bailCooldown = 1.1;
+    this.airRailTarget = null;
     this.fx.setGrinding(false);
     this.fx.setSpeed(0);
     this.fx.burstPoof(14);

@@ -86,17 +86,35 @@ export class SkateScene {
     for (const piece of this.park.pieces.values()) {
       const def = CATALOG_BY_ID[piece.placed.itemId];
       if (!def || def.category === "floors") continue;
+      // Sample the piece's world-space top Y so the AI can target the ridable surface.
+      let maxY = 0;
       for (const m of piece.instance.meshes) {
         if (!(m instanceof Mesh) || m.getTotalVertices() === 0) continue;
         m.metadata = { ...m.metadata, kind: def.tags.includes("wall") ? "wall" : "piece", tags: def.tags };
         new PhysicsAggregate(m, PhysicsShapeType.MESH, { mass: 0, friction: 0.25, restitution: 0 }, scene);
         staticMeshes.push(m);
+        m.computeWorldMatrix(true);
+        const by = m.getBoundingInfo().boundingBox.maximumWorld.y;
+        if (by > maxY) maxY = by;
       }
       const p = gridToWorld(def.id, piece.placed.x, piece.placed.z, piece.placed.rot, map.size);
       const yaw = rotationY(piece.placed.rot);
-      const axis = new Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-      if (def.tags.includes("ramp")) pois.push({ position: p, kind: "ramp", axis });
-      else if (def.tags.includes("grind") || def.tags.includes("rail")) pois.push({ position: p, kind: "grind", axis });
+      // Rotated axis depends on which footprint dimension is the long side.
+      // At rot 0/2 the long side runs along z; at rot 1/3 it runs along x.
+      const rotAxis0 = new Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+      const length = Math.max(def.footprint.w, def.footprint.d) * 1.0;
+      if (def.tags.includes("ramp") && !def.tags.includes("grind")) {
+        pois.push({ position: p, kind: "ramp", axis: rotAxis0 });
+      } else if (def.tags.includes("grind") || def.tags.includes("rail")) {
+        pois.push({
+          position: p,
+          kind: "grind",
+          axis: rotAxis0,
+          length,
+          topY: maxY,
+          thin: def.tags.includes("rail"),
+        });
+      }
     }
 
     onProgress?.("Lacing up…");
@@ -129,6 +147,7 @@ export class SkateScene {
     if (this.disposed) return;
     this.ai.attach(this.player);
     this.player.driver = this.mode === "ai" ? "ai" : "manual";
+    if (import.meta.env.DEV) (window as unknown as { __aiDebug: AiNavigator["debug"] }).__aiDebug = this.ai.debug;
 
     this.camTarget.copyFrom(this.player.position);
     this.world.camera.setTarget(this.camTarget);
