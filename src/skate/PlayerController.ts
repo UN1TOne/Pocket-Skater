@@ -92,6 +92,17 @@ export class PlayerController {
   private grindLockTimer = 0;
   /** True while probeGround should accept a slightly wider range (we've been on a rail). */
   private railStickFrames = 0;
+  /**
+   * Blocked-grind guard. A rail that runs into a wall pins the rider in place while the assist
+   * keeps "driving" them along it — an endless grind. We compare the distance actually covered
+   * with what the assist asked for; when stuck, the rail is let go for `railReleaseTimer`.
+   */
+  private railReleaseTimer = 0;
+  private railTracking = false;
+  private railWindowStart = new Vector3();
+  private railLastAlong = 0;
+  private railWindow = 0;
+  private railExpected = 0;
   private rayFwd = new PhysicsRaycastResult();
   private rayBwd = new PhysicsRaycastResult();
   private lastVel = new Vector3();
@@ -198,6 +209,7 @@ export class PlayerController {
     this.visual.setEnabled(true);
     this.bailCooldown = Math.max(0, this.bailCooldown - dt);
     this.grindLockTimer = Math.max(0, this.grindLockTimer - dt);
+    this.railReleaseTimer = Math.max(0, this.railReleaseTimer - dt);
 
     const t = this.tuning;
     const vel = this.body.getLinearVelocity();
@@ -328,14 +340,16 @@ export class PlayerController {
 
     // Fresh rail contact → arm the commitment window BEFORE rail assist, so the first frame
     // of grinding already gets the hard Y snap + perp zero.
-    if (this.grounded && this.groundTags.includes("rail") && this.state !== "grinding") {
+    if (this.grounded && this.groundTags.includes("rail") && this.state !== "grinding" && this.railReleaseTimer <= 0) {
       this.grindLockTimer = 0.35;
     }
 
     // Rail assist: decompose velocity into along/perpendicular, drive along forward with a
     // minimum speed, kill perpendicular motion, and (for thin rails) lock the rider's Y to
     // the rail height so gravity can't drag them off the top.
-    if (this.grounded && this.railDir && (this.groundTags.includes("rail") || this.groundTags.includes("grind"))) {
+    const railAssist = this.grounded && this.railDir !== null && (this.groundTags.includes("rail") || this.groundTags.includes("grind"));
+    this.trackRailProgress(railAssist, dt);
+    if (railAssist && this.railDir) {
       const dir = this.railDir;
       const perpX = -dir.z;
       const perpZ = dir.x;
@@ -356,6 +370,7 @@ export class PlayerController {
       const perpK = 1 - Math.exp(-40 * dt);
       const newAlong = Scalar.Lerp(along, alongTarget, alongK);
       const newPerp = Scalar.Lerp(perp, 0, perpK);
+      this.railLastAlong = newAlong;
       newVel.x = dir.x * newAlong + perpX * newPerp;
       newVel.z = dir.z * newAlong + perpZ * newPerp;
 
@@ -365,7 +380,9 @@ export class PlayerController {
         // ignored. We flip it to false during grinding so pos writes propagate, and restore
         // it when leaving the rail.
         this.body.disablePreStep = false;
-        const knownY = this.airRailTarget?.y;
+        // The AI's known rail top steadies the first frames of contact; after that follow the
+        // sampled rail height, or riders float above sloped rails (the AI's Y is the entry end).
+        const knownY = this.grindLockTimer > 0 ? this.airRailTarget?.y : undefined;
         const yBase = typeof knownY === "number" ? knownY : this.railCenter.y;
         const yTarget = yBase + this.tuning.radius;
         const dx = this.collider.position.x - this.railCenter.x;
@@ -390,7 +407,7 @@ export class PlayerController {
 
     const hSpeed = Math.hypot(newVel.x, newVel.z);
     this.speed = hSpeed;
-    const grinding = this.grounded && hSpeed > 0.6 && (this.groundTags.includes("rail") || this.groundTags.includes("grind"));
+    const grinding = this.grounded && hSpeed > 0.6 && this.railReleaseTimer <= 0 && (this.groundTags.includes("rail") || this.groundTags.includes("grind"));
 
     let next: RiderState;
     if (!this.grounded) next = "air";
@@ -442,6 +459,41 @@ export class PlayerController {
     Quaternion.RotationYawPitchRollToRef(this.facing, pitch, this.tilt * 0.6, (this.visual.rotationQuaternion ??= Quaternion.Identity()));
   }
 
+  /** Feeds the blocked-grind guard; lets go of the rail when ~0.3 s of assist went nowhere. */
+  private trackRailProgress(active: boolean, dt: number) {
+    const pos = this.collider.position;
+    if (!active) {
+      this.railTracking = false;
+      this.railWindow = this.railExpected = 0;
+      return;
+    }
+    if (!this.railTracking) {
+      this.railWindowStart.copyFrom(pos);
+    } else {
+      this.railExpected += Math.abs(this.railLastAlong) * dt;
+      this.railWindow += dt;
+      if (this.railWindow >= 0.3) {
+        // Net displacement, not path length: a rider wedged in place still jitters a centimetre
+        // or so per frame, which would otherwise add up to "progress".
+        const net = Math.hypot(pos.x - this.railWindowStart.x, pos.z - this.railWindowStart.z);
+        // 0.12 m per 0.3 s ≈ 0.4 m/s asked for — below the 0.6 m/s a grind needs anyway.
+        const blocked = this.railExpected > 0.12 && net < this.railExpected * 0.25;
+        this.railWindow = this.railExpected = 0;
+        this.railWindowStart.copyFrom(pos);
+        if (blocked) {
+          this.railReleaseTimer = 0.6;
+          this.grindLockTimer = 0;
+          this.railDir = null;
+          this.railTracking = false;
+          this.body.disablePreStep = true;
+          this.body.setGravityFactor(1);
+          return;
+        }
+      }
+    }
+    this.railTracking = true;
+  }
+
   private probeGround() {
     const r = this.tuning.radius;
     const from = this.collider.position;
@@ -482,7 +534,7 @@ export class PlayerController {
    */
   private updateRailFromHit() {
     const isRailish = this.groundTags.includes("rail") || this.groundTags.includes("grind");
-    if (!isRailish) {
+    if (!isRailish || this.railReleaseTimer > 0) {
       this.railDir = null;
       return;
     }
