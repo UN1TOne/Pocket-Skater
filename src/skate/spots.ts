@@ -21,7 +21,7 @@ export interface SpotEntry {
   target: Vector3;
   /** Unit XZ heading for the run-up and the first stretch of the ride. */
   dir: Vector3;
-  /** Grind: the line's far end. Ramp: the top of the ramp. */
+  /** Grind: the line's far end. Ramp: the lip (take-off edge) at the top. */
   exit: Vector3;
   /** Unit XZ heading when the ride reaches `exit`. */
   exitDir: Vector3;
@@ -40,6 +40,8 @@ export interface Spot {
   length: number;
   /** Highest surface point above the floor (m). */
   height: number;
+  /** Steep ramps (quarter-pipes, bowl walls): world Y of the coping, where the AI pops. */
+  copingY?: number;
   center: Vector3;
   /** Placed-item uids that make up the spot. */
   pieces: string[];
@@ -78,14 +80,20 @@ const GRIND_LINES: Record<string, P3[][]> = {
   "obstacle-box": [[[0, 0.21, -0.25], [0, 0.21, 0.25]]],
 };
 
-/** Ramps: where the transition starts (local, on the floor), which way is uphill, lip height. */
-const RAMPS: Record<string, { foot: P3; up: P3; lip: number }> = {
-  ramp: { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.3 },
-  "half-pipe": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.8 },
-  "half-pipe-low": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.4 },
-  "bowl-side": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.8 },
-  "bowl-side-low": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.4 },
-  "slope-smooth": { foot: [0, 0, 1], up: [0, 0, -1], lip: 0.8 },
+/**
+ * Ramps: where the transition starts (local, on the floor), which way is uphill, lip height,
+ * and how far uphill (m, horizontal) the lip — the take-off edge — is from the foot.
+ */
+const RAMPS: Record<string, { foot: P3; up: P3; lip: number; depth: number; steep?: boolean }> = {
+  // Kicker: transition up to z = 0, flat deck to the back edge at z = -0.5.
+  ramp: { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.3, depth: 1.0 },
+  // Quarter-pipes / bowl walls go near-vertical at the coping, so the rider's centre stops
+  // advancing well short of `depth`; the AI pops these by height instead (steep).
+  "half-pipe": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.8, depth: 0.95, steep: true },
+  "half-pipe-low": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.4, depth: 0.95, steep: true },
+  "bowl-side": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.8, depth: 0.95, steep: true },
+  "bowl-side-low": { foot: [0, 0, 0.5], up: [0, 0, -1], lip: 0.4, depth: 0.95, steep: true },
+  "slope-smooth": { foot: [0, 0, 1], up: [0, 0, -1], lip: 0.8, depth: 1.76 },
 };
 
 /** Run-up lengths to try, longest first (more speed into the trick). */
@@ -275,12 +283,13 @@ function buildRampSpots(pieces: RawPiece[]): Spot[] {
     const m = pieceMatrix(p);
     const foot = Vector3.TransformCoordinates(new Vector3(...r.foot), m);
     const dir = flatDir(Vector3.TransformNormal(new Vector3(...r.up), m))!;
-    const top = foot.add(dir.scale(0.9));
+    const top = foot.add(dir.scale(r.depth));
     top.y = p.pos.y + r.lip;
     const spot: Spot = {
       id: `ramp:${p.uid}`,
       kind: "ramp",
       model: p.def.id,
+      copingY: r.steep ? p.pos.y + r.lip : undefined,
       thin: false,
       length: 0,
       height: r.lip,

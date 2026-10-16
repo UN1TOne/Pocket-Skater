@@ -67,6 +67,9 @@ export interface RunResult {
   spotInfo: Record<string, string>;
   /** Where bails happened + catalog ids within one cell — for diagnosing bail hotspots. */
   bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }>;
+  /** Airtimes of landings, keyed by the catalog id launched from. */
+  landings: Record<string, number[]>;
+  launchSpeeds: Record<string, number[]>;
   longGrinds: Array<{ t: number; dur: number; items: string[]; path: number; end: number[] }>;
   /** What the park analysis (src/skate/spots.ts) found; geometryMisses should be empty. */
   spots: { grind: number; ramp: number; usable: number; entries: number; blockedEnds: number; longestLine: number; geometryMisses: string[] };
@@ -156,11 +159,21 @@ async function main() {
   const grindItems = new Set<string>();
   let grindPath = 0;
   const itemOf = new Map(map.items.map((it) => [it.uid, it.itemId]));
+  const landings: Record<string, number[]> = {};
+  /** Rider speed at take-off, parallel to `landings`. */
+  const launchSpeeds: Record<string, number[]> = {};
+  let launchSpeed = 0;
   const bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }> = [];
   const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, bails: 0, unsticks: 0, slowSec: 0 };
   const stub = (): Instance => ({ root: new TransformNode("stub", scene), meshes: [], animationGroups: [], dispose() {} });
   const player = new PlayerController(scene, stub(), stub(), "skateboard", findSpawn(map), {
     onLand: (_fall, airtime) => {
+      // Airtime by what we launched from (ramp model / "flat" / "rail") — tuning input for ramps.
+      if (airtime > 0.05) {
+        const from = launchUid ? (itemOf.get(launchUid) ?? "?") : "flat";
+        (landings[from] ??= []).push(+airtime.toFixed(2));
+        (launchSpeeds[from] ??= []).push(+launchSpeed.toFixed(2));
+      }
       const air = airScore(airtime);
       if (air > 0) {
         score += air;
@@ -256,7 +269,10 @@ async function main() {
       physics.raycastToRef(p, p.add(new Vector3(0, -0.7, 0)), under);
       groundUid = under.hasHit && under.body !== player.body ? ((under.body?.transformNode?.metadata as { uid?: string } | undefined)?.uid ?? null) : null;
     }
-    if (wasGrounded && !player.grounded) launchUid = groundUid;
+    if (wasGrounded && !player.grounded) {
+      launchUid = groundUid;
+      launchSpeed = player.body.getLinearVelocity().length();
+    }
     wasGrounded = player.grounded;
     if (traceFrom >= 0 && simTime >= traceFrom && simTime <= traceTo) {
       const v = player.body.getLinearVelocity();
@@ -296,6 +312,8 @@ async function main() {
     spotInfo: Object.fromEntries(spots.map((s) => [s.id, `${s.pieces.map((u) => itemOf.get(u)).join('+')} len=${s.length.toFixed(1)} h=${s.height.toFixed(2)} entries=${s.entries.map((e) => `(${e.start.x.toFixed(1)},${e.start.z.toFixed(1)})→(${e.end.x.toFixed(1)},${e.end.z.toFixed(1)})`).join(' ')}`])),
     bailSites,
     longGrinds,
+    landings,
+    launchSpeeds,
     spots: {
       grind: spots.filter((s) => s.kind === "grind").length,
       ramp: spots.filter((s) => s.kind === "ramp").length,

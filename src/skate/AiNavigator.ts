@@ -44,12 +44,25 @@ export const AI_TUNING = {
   noveltyTauSec: 15,
   /** Extra divisor per attempt at this spot in the last recentWindowSec: 1 / (1 + n * noveltyPerTry). */
   noveltyPerTry: 0,
+  /** Same idea per spot model: repeating one kind of trick (e.g. quarter-pipe after quarter-pipe) costs appeal. */
+  modelNoveltyPerTry: 0.6,
   recentWindowSec: 60,
   failsToCool: 3,
   coolDownSec: 12,
   /** Exponent on utility/best for the weighted draw: higher = greedier. */
   pickSharpness: 4,
 };
+/** Board clearance over a rail top at the jump apex (m). */
+const RAIL_CLEARANCE = 0.1;
+/** Upward push PlayerController adds to every jump (0.7 × ground normal). */
+const JUMP_NORMAL_BOOST = 0.7;
+/** Ollie this far (m) before a ramp's lip so the pop happens on the ramp, not off its edge. */
+const LIP_LEAD = 0.2;
+/**
+ * Steep ramps: pop once the rider's centre is within this much (m) of where it sits at the coping
+ * (coping height + half a radius on the near-vertical wall), still rising.
+ */
+const COPING_LEAD = 0.15;
 /** Time allowed to drive `metres` of navmesh path to a run-up before treating it as stuck. */
 const navBudget = (metres: number) => 2.5 + metres / 2;
 
@@ -125,6 +138,8 @@ export class AiNavigator {
    * pointless quarter-pipe pull down every quarter-pipe instead of trying them all.
    */
   private models = new Map<string, { earned: number; promised: number }>();
+  /** Clock times of recent attempts per spot model (for the trick-variety penalty). */
+  private recentByModel = new Map<string, number[]>();
   /** DEV-mode counters for diagnosing the rail-approach pipeline. */
   readonly debug = {
     plans: 0,
@@ -136,6 +151,7 @@ export class AiNavigator {
     lineupTimeout: 0,
     rampPlans: 0,
     rampAirs: 0,
+    rampOllies: 0,
     cooldowns: 0,
     roams: 0,
     navTimeout: 0,
@@ -274,6 +290,9 @@ export class AiNavigator {
     this.models.set(plan.spot.model, g);
     m.lastTry = this.clock;
     m.recent.push(this.clock);
+    const rm = this.recentByModel.get(plan.spot.model) ?? [];
+    rm.push(this.clock);
+    this.recentByModel.set(plan.spot.model, rm);
     if (this.planPoints > 0) m.fails = 0;
     else if (++m.fails >= AI_TUNING.failsToCool) {
       m.fails = 0;
@@ -327,9 +346,13 @@ export class AiNavigator {
     const expected = (m.points + AI_TUNING.priorTries * this.modelAdjustedPrior(spot)) / (m.attempts + AI_TUNING.priorTries);
     const rideSec = spot.kind === "grind" ? spot.length / (spot.thin ? 4.2 : 3) : 1;
     const seconds = travel / AI_TUNING.cruiseSpeed + AI_TUNING.runUpSec + rideSec;
-    m.recent = m.recent.filter((t) => this.clock - t < AI_TUNING.recentWindowSec);
+    const recentOnly = (ts: number[]) => ts.filter((t) => this.clock - t < AI_TUNING.recentWindowSec);
+    m.recent = recentOnly(m.recent);
+    const modelTries = recentOnly(this.recentByModel.get(spot.model) ?? []).length;
     const novelty =
-      (1 - AI_TUNING.noveltyDamp * Math.exp(-(this.clock - m.lastTry) / AI_TUNING.noveltyTauSec)) / (1 + AI_TUNING.noveltyPerTry * m.recent.length);
+      (1 - AI_TUNING.noveltyDamp * Math.exp(-(this.clock - m.lastTry) / AI_TUNING.noveltyTauSec)) /
+      (1 + AI_TUNING.noveltyPerTry * m.recent.length) /
+      (1 + AI_TUNING.modelNoveltyPerTry * modelTries);
     return { spot, entry, travel, utility: (Math.max(0.5, expected) / seconds) * novelty };
   }
 
@@ -437,8 +460,21 @@ export class AiNavigator {
     }
 
     if (plan.phase === "lineup" && plan.spot.kind === "ramp") {
-      // Ride straight up the transition; the ramp does the launching.
-      if (!ctrl.grounded && plan.phaseTimer > 0.1) {
+      // Ride up the transition and ollie off the lip. Rolling up alone barely leaves the ramp:
+      // at top speed a 0.8 m quarter-pipe bleeds the rider to ~1.4 m/s by the lip (< 0.2 s of air).
+      const rel = pos.subtract(plan.endNear);
+      const climbed = rel.x * plan.axisInward.x + rel.z * plan.axisInward.z;
+      const depth = Math.hypot(plan.endFar.x - plan.endNear.x, plan.endFar.z - plan.endNear.z);
+      const vy = ctrl.body.getLinearVelocity().y;
+      const atCoping = plan.spot.copingY !== undefined && pos.y > plan.spot.copingY + 0.5 * ctrl.tuning.radius - COPING_LEAD && vy > 0.2;
+      if (ctrl.grounded && this.jumpCooldown <= 0 && (climbed > depth - LIP_LEAD || atCoping)) {
+        ctrl.requestJump();
+        this.jumpCooldown = 0.9;
+        this.debug.rampOllies += 1;
+        plan.phase = "air";
+        plan.phaseTimer = 0;
+        this.debug.lastPhase = "air";
+      } else if (!ctrl.grounded && plan.phaseTimer > 0.1) {
         plan.phase = "air";
         plan.phaseTimer = 0;
         this.debug.lastPhase = "air";
@@ -465,15 +501,19 @@ export class AiNavigator {
     }
 
     if (plan.phase === "lineup") {
-      const g = 10;
+      // Size the ollie for the real gravity so the board clears the rail top by RAIL_CLEARANCE at
+      // the apex, and time it so the apex lands over the landing point (the magnet then settles
+      // the rider onto the rail on the way down). The controller adds JUMP_NORMAL_BOOST of
+      // ground-normal push on top of the requested speed.
+      const g = Math.abs(this.physics.gravity.y) || 15.7;
       const topY = plan.entry.topY;
-      const rise = Math.max(0.25, topY - 0.24 + 0.18);
-      const jumpSpeed = Math.min(5.0, Math.sqrt(2 * g * rise));
-      const timeToApex = jumpSpeed / g;
-      // Jump slightly before apex-distance so the apex-descent hits the rail entry; the
-      // magnet then pulls the player down onto the rail top during descent.
-      const apexHorizontalDist = ctrl.speed * timeToApex;
-      const jumpAhead = Math.max(0.6, apexHorizontalDist);
+      const rise = Math.max(0.15, topY + ctrl.tuning.radius + RAIL_CLEARANCE - pos.y);
+      const vUp = Math.sqrt(2 * g * rise);
+      const jumpSpeed = Math.min(6, Math.max(1.5, vUp - JUMP_NORMAL_BOOST));
+      const timeToApex = (jumpSpeed + JUMP_NORMAL_BOOST) / g;
+      // Distance along the run-up to the landing point (a little inside the line's end).
+      const landInset = Math.hypot(plan.airAim.x - plan.endNear.x, plan.airAim.z - plan.endNear.z);
+      const jumpAhead = Math.max(0.5, ctrl.speed * timeToApex - landInset);
 
       const toEnd = plan.endNear.subtract(pos);
       toEnd.y = 0;
