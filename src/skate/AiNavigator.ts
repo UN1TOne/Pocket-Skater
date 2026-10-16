@@ -402,8 +402,8 @@ export class AiNavigator {
     }
     if (!entry) return null;
     const expected = (m.points + AI_TUNING.priorTries * this.modelAdjustedPrior(spot)) / (m.attempts + AI_TUNING.priorTries);
-    // Grinds run at ~2x entry speed (PlayerController GRIND_SPEED_MULT).
-    const rideSec = spot.kind === "grind" ? spot.length / (spot.thin ? 8 : 6) : 1;
+    // Grinds run at ~1.5x entry speed (PlayerController GRIND_SPEED_MULT).
+    const rideSec = spot.kind === "grind" ? spot.length / (spot.thin ? 6 : 4.5) : 1;
     const seconds = travel / AI_TUNING.cruiseSpeed + AI_TUNING.runUpSec + rideSec;
     const recentOnly = (ts: number[]) => ts.filter((t) => this.clock - t < AI_TUNING.recentWindowSec);
     m.recent = recentOnly(m.recent);

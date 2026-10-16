@@ -44,7 +44,7 @@ const CURVE_ARC_CENTER_LOCAL = new Vector3(0.5, 0, 0.5);
 const CURVE_ARC_END_LOCAL = new Vector3(0.5, 0, 0);
 
 /** Grind speed relative to the speed the rider hit the rail with. */
-const GRIND_SPEED_MULT = 2;
+const GRIND_SPEED_MULT = 1.5;
 
 /**
  * Character pose per rider state. The skate-* clips are a sideways board stance (hips and
