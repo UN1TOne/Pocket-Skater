@@ -49,7 +49,7 @@ export interface ControllerEvents {
   onBail?: (velocity: Vector3, point: Vector3) => void;
   onGrindChange?: (grinding: boolean) => void;
   /** Side-on knock that didn't bail; `speed` is the into-surface speed, `metal` for rails. */
-  onImpact?: (speed: number, metal: boolean) => void;
+  onImpact?: (speed: number, metal: boolean, tags: string[]) => void;
 }
 
 /** Havok rolling-sphere character controller: velocity is projected onto the surface it stands on. */
@@ -645,10 +645,13 @@ export class PlayerController {
       this.bail(v.clone(), point ?? this.collider.position.clone());
       return;
     }
-    // Side-on knocks only: floor / rail-top contact is a landing (onLand) or a grind.
-    if (type === PhysicsEventType.COLLISION_STARTED && Math.abs(n.y) < 0.5 && this.state !== "grinding") {
+    // Side-on knocks only: floor / rail-top contact is a landing (onLand) or a grind, and rideable
+    // surfaces (ramp transitions, low flat props) are just terrain — climbing a quarter-pipe or
+    // rolling over a pallet isn't a knock.
+    const rideable = tags.includes("ramp") || tags.includes("flat");
+    if (type === PhysicsEventType.COLLISION_STARTED && Math.abs(n.y) < 0.5 && this.state !== "grinding" && !rideable) {
       const intoSpeed = Math.abs(v.x * n.x + v.z * n.z);
-      if (intoSpeed > 1.2) this.events.onImpact?.(intoSpeed, tags.includes("rail"));
+      if (intoSpeed > 1.2) this.events.onImpact?.(intoSpeed, tags.includes("rail"), tags);
     }
   }
 
