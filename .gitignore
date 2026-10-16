@@ -7,3 +7,5 @@ vite.log
 last-probe.json
 last-probe-v2.json
 scripts/preset-*.png
+scripts/ai-sim/.build/
+scripts/ai-sim/results/

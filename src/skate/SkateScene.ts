@@ -6,14 +6,16 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Engine } from "@babylonjs/core/Engines/engine";
 import { createEngine, enableHavok } from "@/engine/createEngine";
 import { createWorld, type World } from "@/engine/world/createWorld";
-import { Park, gridToWorld, rotationY } from "@/engine/world/park";
+import { Park, gridToWorld } from "@/engine/world/park";
 import { gameInput } from "@/engine/input";
 import { Sfx } from "@/engine/audio/Sfx";
 import { CATALOG_BY_ID } from "@/data/catalog";
-import { footprintCells, type GameHud } from "@/store/useGameStore";
+import type { GameHud } from "@/store/useGameStore";
+import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, airScore, grindBonus, grindLabel } from "./scoring";
+import { buildPointsOfInterest, findSpawn, RespawnPlanner, type RawPiece } from "./parkLayout";
 import type { CharacterId, MapData, PlayMode, RideId } from "@/types/game";
 import { PlayerController } from "./PlayerController";
-import { AiNavigator, type PointOfInterest } from "./AiNavigator";
+import { AiNavigator } from "./AiNavigator";
 import { Bail } from "./Bail";
 
 export interface SkateSceneOptions {
@@ -41,7 +43,7 @@ export class SkateScene {
   private hudTimer = 0;
   private disposed = false;
   private camTarget = new Vector3();
-  private respawnHistory: Array<{ pos: Vector3; t: number }> = [];
+  private respawns = new RespawnPlanner();
   private grindStart = 0;
 
   constructor(private opts: SkateSceneOptions) {
@@ -86,14 +88,6 @@ export class SkateScene {
 
     const staticMeshes: Mesh[] = [this.world.ground.slab];
     // Phase 1: register physics on every placed piece and collect raw per-piece info.
-    interface RawPiece {
-      x: number;
-      z: number;
-      rot: number;
-      def: typeof CATALOG_BY_ID[string];
-      pos: Vector3;
-      topY: number;
-    }
     const rawPieces: RawPiece[] = [];
     for (const piece of this.park.pieces.values()) {
       const def = CATALOG_BY_ID[piece.placed.itemId];
@@ -114,93 +108,7 @@ export class SkateScene {
       rawPieces.push({ x: piece.placed.x, z: piece.placed.z, rot: piece.placed.rot, def, pos: p, topY: maxY });
     }
 
-    // Phase 2: group adjacent grind pieces into chains so the AI aims at the full line
-    // instead of a 1m fragment. Pieces chain when they share the same major axis (rot 0/2 vs 1/3),
-    // the same perpendicular grid coord, and are in consecutive cells along the axis — AND their
-    // top heights match within a tolerance (so low/high rails don't merge).
-    //
-    // We also key chains by whether the group has mixed rail-* vs ledge-* tags, keeping those apart.
-    const pois: PointOfInterest[] = [];
-    // Only chain thin rail pieces (rail-*). Non-thin grind pieces (ledges, boxes) don't have the
-    // Y lock + minRailSpeed physics so the AI can't persistently grind them — leaving them as
-    // solo POIs so the weighted picker deprioritizes them.
-    const thinRailRaw = rawPieces.filter((r) => r.def.tags.includes("rail"));
-    const otherGrindRaw = rawPieces.filter(
-      (r) => !r.def.tags.includes("rail") && r.def.tags.includes("grind"),
-    );
-    const nonGrindRaw = rawPieces.filter(
-      (r) => !r.def.tags.includes("rail") && !r.def.tags.includes("grind"),
-    );
-    const consumed = new Set<RawPiece>();
-    for (const seed of thinRailRaw) {
-      if (consumed.has(seed)) continue;
-      const axisAlongZ = seed.rot % 2 === 0; // rot 0,2 → axis Z; rot 1,3 → axis X
-      const perpKey = axisAlongZ ? seed.x : seed.z;
-      // Collect every thin rail on the same perpendicular line with matching topY tolerance.
-      const candidates = thinRailRaw.filter(
-        (r) =>
-          !consumed.has(r) &&
-          r.rot % 2 === seed.rot % 2 &&
-          (axisAlongZ ? r.x === perpKey : r.z === perpKey) &&
-          Math.abs(r.topY - seed.topY) < 0.15,
-      );
-      // Sort along axis.
-      candidates.sort((a, b) => (axisAlongZ ? a.z - b.z : a.x - b.x));
-      // Walk from the seed outward in both directions, keeping only pieces that are grid-adjacent.
-      const seedIdx = candidates.indexOf(seed);
-      const chain: RawPiece[] = [seed];
-      consumed.add(seed);
-      for (let i = seedIdx - 1; i >= 0; i--) {
-        const prev = chain[0];
-        const cur = candidates[i];
-        const gap = axisAlongZ ? prev.z - cur.z : prev.x - cur.x;
-        if (gap !== 1) break;
-        chain.unshift(cur);
-        consumed.add(cur);
-      }
-      for (let i = seedIdx + 1; i < candidates.length; i++) {
-        const prev = chain[chain.length - 1];
-        const cur = candidates[i];
-        const gap = axisAlongZ ? cur.z - prev.z : cur.x - prev.x;
-        if (gap !== 1) break;
-        chain.push(cur);
-        consumed.add(cur);
-      }
-      // Build one POI for the whole chain.
-      const first = chain[0];
-      const last = chain[chain.length - 1];
-      const centerX = (first.pos.x + last.pos.x) / 2;
-      const centerZ = (first.pos.z + last.pos.z) / 2;
-      const length = chain.length; // 1 world unit per cell
-      const topY = chain.reduce((m, r) => Math.max(m, r.topY), 0);
-      pois.push({
-        position: new Vector3(centerX, 0, centerZ),
-        kind: "grind",
-        axis: new Vector3(axisAlongZ ? 0 : 1, 0, axisAlongZ ? 1 : 0),
-        length,
-        topY,
-        thin: true,
-      });
-    }
-    // Non-thin grind pieces (ledges, boxes) stay as solo POIs — AI can target but weighted lower.
-    for (const r of otherGrindRaw) {
-      const yaw = rotationY(r.rot as 0 | 1 | 2 | 3);
-      pois.push({
-        position: r.pos,
-        kind: "grind",
-        axis: new Vector3(Math.sin(yaw), 0, Math.cos(yaw)),
-        length: 1,
-        topY: r.topY,
-        thin: false,
-      });
-    }
-    // Keep ramp POIs for occasional variety.
-    for (const r of nonGrindRaw) {
-      if (r.def.tags.includes("ramp")) {
-        const yaw = rotationY(r.rot as 0 | 1 | 2 | 3);
-        pois.push({ position: r.pos, kind: "ramp", axis: new Vector3(Math.sin(yaw), 0, Math.cos(yaw)) });
-      }
-    }
+    const pois = buildPointsOfInterest(rawPieces);
 
     onProgress?.("Lacing up…");
     const spawn = findSpawn(map);
@@ -217,14 +125,15 @@ export class SkateScene {
     this.player = new PlayerController(scene, charInst, rideInst, this.opts.ride, spawn, {
       onJump: () => this.sfx.jump(),
       onLand: (fall, airtime) => {
-        if (airtime > 0.3) this.addScore(Math.round(airtime * 40));
+        const air = airScore(airtime);
+        if (air > 0) this.addScore(air);
         // Rail landings get the grind clank instead of a ground thud.
         if (fall > 1.5 && !this.player.groundTags.includes("rail")) this.sfx.impact(fall / 7);
       },
       onImpact: (speed, metal) => this.sfx.impact(speed / 5, metal),
       onBail: (vel) => {
         this.sfx.bail();
-        this.score = Math.max(0, this.score - 50);
+        this.score = Math.max(0, this.score - BAIL_PENALTY);
         this.opts.onHud({ bailed: true, score: Math.floor(this.score) });
         void this.bail.trigger(this.player, vel, this.opts.character, this.opts.ride);
       },
@@ -237,13 +146,10 @@ export class SkateScene {
         } else if (this.grindStart > 0) {
           const dur = (performance.now() - this.grindStart) / 1000;
           this.grindStart = 0;
-          // Quadratic bonus so longer grinds feel dramatically more rewarding:
-          // 1s = +10, 2s = +40, 3s = +90, 5s = +250.
-          if (dur > 0.3) {
-            const bonus = Math.round(10 * dur * dur);
+          const bonus = grindBonus(dur);
+          if (bonus > 0) {
             this.score += bonus;
-            const label = dur > 2.5 ? "SICK GRIND" : dur > 1.2 ? "LONG GRIND" : "GRIND";
-            this.opts.onHud({ score: Math.floor(this.score), toast: { text: label, bonus, t: performance.now() } });
+            this.opts.onHud({ score: Math.floor(this.score), toast: { text: grindLabel(dur), bonus, t: performance.now() } });
           }
         }
         if (import.meta.env.DEV) {
@@ -295,44 +201,9 @@ export class SkateScene {
    */
   private doRespawn() {
     const safe = this.player["lastSafePos"] as Vector3;
-    const now = performance.now();
-    this.respawnHistory = this.respawnHistory.filter((r) => now - r.t < 6000);
-    const stuckCount = this.respawnHistory.filter((r) => Vector3.Distance(r.pos, safe) < 0.6).length;
-    let dest: Vector3 = safe;
-    if (stuckCount >= 2) {
-      const alt = this.findEmptyNearby(safe);
-      if (alt) dest = alt;
-    }
-    this.respawnHistory.push({ pos: dest.clone(), t: now });
+    const dest = this.respawns.pick(safe, performance.now(), this.opts.map);
     this.player.respawn();
     if (dest !== safe) this.player.teleport(dest);
-  }
-
-  /** Spiral out from a world position to find an empty, obstacle-free grid cell. */
-  private findEmptyNearby(worldPos: Vector3): Vector3 | null {
-    const map = this.opts.map;
-    const size = map.size;
-    const occupied = new Set<string>();
-    for (const it of map.items) {
-      if (CATALOG_BY_ID[it.itemId]?.category === "floors") continue;
-      for (const [x, z] of footprintCells(it.itemId, it.x, it.z, it.rot)) occupied.add(`${x},${z}`);
-    }
-    const cx = Math.floor(worldPos.x + size / 2);
-    const cz = Math.floor(worldPos.z + size / 2);
-    for (let r = 1; r <= size; r++) {
-      for (let dx = -r; dx <= r; dx++) {
-        for (let dz = -r; dz <= r; dz++) {
-          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-          const x = cx + dx;
-          const z = cz + dz;
-          if (x < 0 || z < 0 || x >= size || z >= size) continue;
-          let clear = true;
-          for (let i = -1; i <= 1 && clear; i++) for (let j = -1; j <= 1 && clear; j++) if (occupied.has(`${x + i},${z + j}`)) clear = false;
-          if (clear) return new Vector3(x - size / 2 + 0.5, 0.1, z - size / 2 + 0.5);
-        }
-      }
-    }
-    return null;
   }
 
   private tick() {
@@ -365,7 +236,7 @@ export class SkateScene {
 
     this.player.update(dt);
     if (this.player.state === "grinding") {
-      this.score += dt * 12;
+      this.score += dt * GRIND_POINTS_PER_SEC;
       this.sfx.setGrindSpeed(this.player.speed);
     }
 
@@ -399,31 +270,6 @@ export class SkateScene {
     this.world?.dispose();
     this.engine.dispose();
   }
-}
-
-/** Nearest empty cell to the map center (spiral search). */
-function findSpawn(map: MapData): Vector3 {
-  const occupied = new Set<string>();
-  for (const it of map.items) {
-    if (CATALOG_BY_ID[it.itemId]?.category === "floors") continue;
-    for (const [x, z] of footprintCells(it.itemId, it.x, it.z, it.rot)) occupied.add(`${x},${z}`);
-  }
-  const c = Math.floor(map.size / 2);
-  for (let r = 0; r < map.size; r++) {
-    for (let dx = -r; dx <= r; dx++) {
-      for (let dz = -r; dz <= r; dz++) {
-        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-        const x = c + dx;
-        const z = c + dz;
-        if (x < 0 || z < 0 || x >= map.size || z >= map.size) continue;
-        // Require a 3x3 clear area so we don't spawn inside a ramp.
-        let clear = true;
-        for (let i = -1; i <= 1 && clear; i++) for (let j = -1; j <= 1 && clear; j++) if (occupied.has(`${x + i},${z + j}`)) clear = false;
-        if (clear) return new Vector3(x - map.size / 2 + 0.5, 0.1, z - map.size / 2 + 0.5);
-      }
-    }
-  }
-  return new Vector3(0, 0.1, 0);
 }
 
 function pickQuality(): "high" | "medium" | "low" {

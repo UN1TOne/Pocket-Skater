@@ -1,0 +1,77 @@
+{
+  "label": "baseline",
+  "seconds": 300,
+  "seeds": 10,
+  "maps": [
+    "preset-sunset-plaza",
+    "preset-mini-bowl",
+    "preset-kenny-park"
+  ],
+  "createdAt": "2026-10-16T10:28:00.391Z",
+  "summary": {
+    "Sunset Plaza": {
+      "runs": 10,
+      "scorePerMin": 238.9880000000091,
+      "scorePerMinSE": 24.881827764233158,
+      "grindSecPerMin": 7.833999999999811,
+      "longestGrind": 4.368333333332321,
+      "airsPerMin": 0.9400000000000001,
+      "bailsPerMin": 0,
+      "unsticksPerMin": 0.20000000000000004,
+      "slowPct": 9.603333333333216,
+      "spotsPct": 29.230769230769226,
+      "hotspotPct": 39.09611111111125,
+      "coveragePct": 40,
+      "railLandPct": 19.012527634487842,
+      "plansPerMin": 31.52
+    },
+    "Mini Bowl": {
+      "runs": 10,
+      "scorePerMin": 93.00400000000045,
+      "scorePerMinSE": 26.447916414468224,
+      "grindSecPerMin": 3.4800000000000275,
+      "longestGrind": 5.765000000001369,
+      "airsPerMin": 2.3,
+      "bailsPerMin": 4.54,
+      "unsticksPerMin": 0.04,
+      "slowPct": 7.043888888888915,
+      "spotsPct": 8.181818181818183,
+      "hotspotPct": 37.96344978834535,
+      "coveragePct": 36.22448979591837,
+      "railLandPct": 12.832929782082324,
+      "plansPerMin": 24.439999999999998
+    },
+    "Kenny Park": {
+      "runs": 10,
+      "scorePerMin": 313.53600000001177,
+      "scorePerMinSE": 22.475895394350466,
+      "grindSecPerMin": 8.33966666666645,
+      "longestGrind": 3.328333333333873,
+      "airsPerMin": 1.8,
+      "bailsPerMin": 0,
+      "unsticksPerMin": 2.2800000000000002,
+      "slowPct": 5.469444444444534,
+      "spotsPct": 32.1875,
+      "hotspotPct": 57.86722222222168,
+      "coveragePct": 41.27551020408164,
+      "railLandPct": 20.8955223880597,
+      "plansPerMin": 22.819999999999997
+    },
+    "ALL": {
+      "runs": 30,
+      "scorePerMin": 215.1760000000071,
+      "scorePerMinSE": 21.862046604725013,
+      "grindSecPerMin": 6.551222222222097,
+      "longestGrind": 4.4872222222225195,
+      "airsPerMin": 1.68,
+      "bailsPerMin": 1.5133333333333332,
+      "unsticksPerMin": 0.8400000000000001,
+      "slowPct": 7.372222222222222,
+      "spotsPct": 23.200029137529132,
+      "hotspotPct": 44.97559437389277,
+      "coveragePct": 39.166666666666664,
+      "railLandPct": 18.60916860916861,
+      "plansPerMin": 26.26
+    }
+  }
+}
