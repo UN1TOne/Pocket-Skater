@@ -84,8 +84,11 @@ export class AiNavigator {
     airMiss: 0,
     airTimeout: 0,
     lineupTimeout: 0,
+    bailed: 0,
     lastPhase: "idle" as "idle" | "nav" | "lineup" | "air" | "grind",
     lastEndNearDist: 0,
+    lastJumpSpeed: 0,
+    lastRailTopY: 0,
   };
 
   constructor(
@@ -245,15 +248,21 @@ export class AiNavigator {
 
   private pickWeighted(pool: PointOfInterest[], from: Vector3): PointOfInterest | null {
     if (pool.length === 0) return null;
-    // Prefer POIs that are 2-7m away — far enough to carry speed, close enough to not drift aimlessly.
+    // Prefer long thin-rail chains strongly — those are the ones with real sustained grinds.
+    // Distance sweet-spot is wider now; being too picky caused the AI to burn plans on
+    // whatever happened to be 4m away.
     const scored = pool
       .map((p) => {
         const d = Vector3.Distance(p.position, from);
-        const sweet = Math.max(0.1, 1 - Math.abs(d - 4) / 5);
-        return { p, w: sweet };
+        const sweet = Math.max(0.2, 1 - Math.abs(d - 4) / 7);
+        const thinBonus = p.thin ? 3.5 : 1;
+        const lengthBonus = 1 + Math.max(0, (p.length ?? 1) - 1) * 1.2;
+        return { p, w: sweet * thinBonus * lengthBonus };
       })
       .sort((a, b) => b.w - a.w);
-    const top = scored.slice(0, Math.max(2, Math.ceil(scored.length * 0.6)));
+    // Pick from the top 25% — mostly the best, with a little variety so stuck targets don't
+    // deadlock us.
+    const top = scored.slice(0, Math.max(1, Math.ceil(scored.length * 0.25)));
     return top[Math.floor(Math.random() * top.length)].p;
   }
 
@@ -297,25 +306,35 @@ export class AiNavigator {
     const state = ctrl.state;
 
     if (plan.phase === "nav") {
-      // Switch to lineup when either we're close to approach or the agent has arrived.
       const dist = Vector3.Distance(pos, plan.approach);
-      if (dist < 1.0 || plan.phaseTimer > 6) {
+      if (dist < 1.0) {
         plan.phase = "lineup";
         plan.phaseTimer = 0;
         this.debug.reachedApproach += 1;
         this.debug.lastPhase = "lineup";
+      } else if (plan.phaseTimer > 4) {
+        // Nav timeout — can't reach the approach point. Usually the body is pinned against
+        // some geometry. Hard-unstick and pick a different POI entirely.
+        ctrl.unstick();
+        this.pickTarget(ctrl.position);
       }
       return;
     }
 
     if (plan.phase === "lineup") {
-      // Jump when we're close enough to endNear along the axis and roughly aligned.
-      // Jump-ahead distance scales with current speed — the fast line jumps earlier.
+      const g = 10;
+      const topY = plan.poi.topY ?? 0.4;
+      const rise = Math.max(0.25, topY - 0.24 + 0.18);
+      const jumpSpeed = Math.min(5.0, Math.sqrt(2 * g * rise));
+      const timeToApex = jumpSpeed / g;
+      // Jump slightly before apex-distance so the apex-descent hits the rail entry; the
+      // magnet then pulls the player down onto the rail top during descent.
+      const apexHorizontalDist = ctrl.speed * timeToApex;
+      const jumpAhead = Math.max(0.6, apexHorizontalDist);
+
       const toEnd = plan.endNear.subtract(pos);
       toEnd.y = 0;
       const distAlong = toEnd.x * plan.axisInward.x + toEnd.z * plan.axisInward.z;
-      const jumpAhead = Math.max(1.1, ctrl.speed * 0.42);
-      // Alignment: how closely are we moving along axisInward? Dot our velocity with it.
       const align = ctrl.moveDir.x * plan.axisInward.x + ctrl.moveDir.z * plan.axisInward.z;
       const canJump =
         ctrl.grounded &&
@@ -326,17 +345,30 @@ export class AiNavigator {
         align > 0.55;
       this.debug.lastEndNearDist = distAlong;
       if (canJump) {
-        ctrl.requestJump();
-        ctrl.airRailTarget = { x: plan.airAim.x, y: plan.airAim.y, z: plan.airAim.z };
+        ctrl.requestJump(jumpSpeed);
+        ctrl.airRailTarget = {
+          x: plan.airAim.x,
+          y: plan.airAim.y,
+          z: plan.airAim.z,
+          ax: plan.axisAlong.x,
+          az: plan.axisAlong.z,
+        };
         this.jumpCooldown = 0.9;
         plan.phase = "air";
         plan.phaseTimer = 0;
         this.debug.jumpsFired += 1;
         this.debug.lastPhase = "air";
-      } else if (distAlong < -0.3) {
-        // We overshot the near end without jumping — abandon and try a new line.
+        this.debug.lastJumpSpeed = jumpSpeed;
+        this.debug.lastRailTopY = topY;
+      } else if (distAlong < -0.4) {
         this.pickTarget(pos);
-      } else if (plan.phaseTimer > 4) {
+      } else if (plan.phaseTimer > 2.5) {
+        // Lineup should finish fast: 2.4m at > 2m/s is barely over a second. Anything
+        // past 2.5s means something's wedged — abandon the plan.
+        this.debug.lineupTimeout += 1;
+        this.pickTarget(pos);
+      } else if (plan.phaseTimer > 0.7 && ctrl.speed < 0.6) {
+        // Hard wedge: can't even build speed on approach. Give up early.
         this.debug.lineupTimeout += 1;
         this.pickTarget(pos);
       }
@@ -344,10 +376,16 @@ export class AiNavigator {
     }
 
     if (plan.phase === "air") {
+      if (state === "bailed") {
+        ctrl.airRailTarget = null;
+        this.debug.bailed += 1;
+        return;
+      }
       if (state === "grinding") {
         plan.phase = "grind";
         plan.phaseTimer = 0;
-        ctrl.airRailTarget = null;
+        // Keep airRailTarget set during grinding too — the controller's Y lock prefers this
+        // over raycast-sampled railCenter.y which can oscillate on chamfered rail edges.
         this.debug.airSuccess += 1;
         this.debug.lastPhase = "grind";
         return;
@@ -370,8 +408,9 @@ export class AiNavigator {
 
     if (plan.phase === "grind") {
       // Grinding — AI mostly just lets physics ride it along the rail. When grinding ends
-      // (fell off, reached rail end), pick a new target.
+      // (fell off, reached rail end), clear the air aim and pick a new target.
       if (state !== "grinding") {
+        ctrl.airRailTarget = null;
         this.pickTarget(pos);
       }
       return;
@@ -451,8 +490,10 @@ export class AiNavigator {
     this.throttle += (targetThrottle - this.throttle) * Math.min(1, 6 * dt);
     ctrl.moveDir.set(this.smoothSteer.x * this.throttle, 0, this.smoothSteer.z * this.throttle);
 
-    // Reset stuck tracking during lineup/air/grind so we don't false-trigger a repick.
-    if (plan.phase !== "nav") {
+    // Keep stuck tracking active in every phase except pure air (parabolic motion looks like
+    // being stuck when sampled). Lineup can wedge the player against the rail side — the
+    // escalated check will unstick them.
+    if (plan.phase === "air") {
       this.lastPos.copyFrom(pos);
       this.lastProgressCheck = 0;
       this.stuckTimer = 0;
@@ -535,21 +576,31 @@ export class AiNavigator {
     }
   }
 
-  /** Repicks a target if the AI hasn't actually moved in a while (geometry trap). */
-  private tickStuckCheck(_ctrl: PlayerController, pos: Vector3, dt: number) {
+  /**
+   * Fires if the player's net displacement is small over the last ~1s. "Pinned against rail"
+   * cases show up as drifting back-and-forth so just checking frame-to-frame moved underreports
+   * them — we track position at the start of each check window.
+   */
+  private tickStuckCheck(ctrl: PlayerController, pos: Vector3, dt: number) {
     this.lastProgressCheck += dt;
     if (this.lastProgressCheck > 0.8) {
       const moved = Vector3.Distance(pos, this.lastPos);
       this.lastPos.copyFrom(pos);
       this.lastProgressCheck = 0;
-      if (moved < 0.2) {
+      // Threshold raised to 0.5 — a sphere pinned against a rail still drifts ~0.3m per sec.
+      if (moved < 0.5) {
         this.stuckTimer += 1;
-        if (this.stuckTimer >= 2) {
-          this.stuckTimer = 0;
+        if (this.stuckTimer === 2) {
+          // First escalation: teleport the nav agent + repick, in case we're just mis-pathed.
           if (this.crowd && this.agent >= 0 && this.plugin) {
             this.crowd.agentTeleport(this.agent, this.plugin.getClosestPoint(pos));
           }
           this.pickTarget(pos);
+        } else if (this.stuckTimer >= 3) {
+          // Second escalation: physical body is pinned. Teleport to last safe pos and reset.
+          this.stuckTimer = 0;
+          ctrl.unstick();
+          this.pickTarget(ctrl.position);
         }
       } else this.stuckTimer = 0;
     }
