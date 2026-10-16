@@ -8,7 +8,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { PlayerController } from "./PlayerController";
 import type { Spot, SpotEntry } from "./spots";
-import { GRIND_POINTS_PER_SEC, airScore, grindBonus } from "./scoring";
+import { airScore, grindBonus, grindSeconds, grindTickPoints } from "./scoring";
 
 /** Per-spot learning: outcomes of past attempts plus novelty / cooldown bookkeeping. */
 interface SpotMemory {
@@ -377,8 +377,7 @@ export class AiNavigator {
 
   private priorPoints(spot: Spot): number {
     if (spot.kind === "grind") {
-      const t = spot.length / (spot.thin ? 4.2 : 3);
-      return AI_TUNING.priorSuccess * (GRIND_POINTS_PER_SEC * t + grindBonus(t));
+      return AI_TUNING.priorSuccess * (grindTickPoints(spot.length) + grindBonus(grindSeconds(spot.length)));
     }
     return AI_TUNING.priorSuccess * airScore(0.3 + 0.5 * spot.height);
   }
@@ -403,7 +402,8 @@ export class AiNavigator {
     }
     if (!entry) return null;
     const expected = (m.points + AI_TUNING.priorTries * this.modelAdjustedPrior(spot)) / (m.attempts + AI_TUNING.priorTries);
-    const rideSec = spot.kind === "grind" ? spot.length / (spot.thin ? 4.2 : 3) : 1;
+    // Grinds run at ~2x entry speed (PlayerController GRIND_SPEED_MULT).
+    const rideSec = spot.kind === "grind" ? spot.length / (spot.thin ? 8 : 6) : 1;
     const seconds = travel / AI_TUNING.cruiseSpeed + AI_TUNING.runUpSec + rideSec;
     const recentOnly = (ts: number[]) => ts.filter((t) => this.clock - t < AI_TUNING.recentWindowSec);
     m.recent = recentOnly(m.recent);

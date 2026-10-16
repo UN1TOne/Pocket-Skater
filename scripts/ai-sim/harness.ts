@@ -30,10 +30,10 @@ import { footprintCells } from "@/store/useGameStore";
 import type { Instance } from "@/engine/assets/AssetLoader";
 import { PlayerController } from "@/skate/PlayerController";
 import { AI_TUNING, AiNavigator } from "@/skate/AiNavigator";
-import { findSpawn, RespawnPlanner, type RawPiece } from "@/skate/parkLayout";
+import { findEmptyNearby, findSpawn, RespawnPlanner, type RawPiece } from "@/skate/parkLayout";
 import { buildSpots, SPOT_MODEL_IDS, verifySpotGeometry } from "@/skate/spots";
 import type { MapData, Rotation } from "@/types/game";
-import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, airScore, grindBonus } from "@/skate/scoring";
+import { BAIL_PENALTY, ScoreFarmGuard, airScore, grindBonus, grindSeconds, grindTickPoints } from "@/skate/scoring";
 
 const DT = 1 / 60;
 /** Synthetic map with every spot model in all four rotations — geometry self-test only. */
@@ -155,6 +155,9 @@ async function main() {
   let simTime = 0;
   let score = 0;
   let grindStartT = -1;
+  /** Metres ridden in the current grind; -1 when not grinding (mirrors SkateScene). */
+  let grindDistance = -1;
+  const farmGuard = new ScoreFarmGuard();
   let bailTimer = 0;
   /** Grinds over 6 s: what was underfoot and how far the rider actually travelled. */
   const longGrinds: Array<{ t: number; dur: number; items: string[]; path: number; end: number[] }> = [];
@@ -167,7 +170,7 @@ async function main() {
   const launchSpeeds: Record<string, number[]> = {};
   let launchSpeed = 0;
   const bailSites: Array<{ t: number; x: number; z: number; speed: number; phase: string; near: string[] }> = [];
-  const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, airSec: 0, bails: 0, unsticks: 0, slowSec: 0, impacts: 0, railImpacts: 0 };
+  const m = { grindSec: 0, grinds: 0, longestGrind: 0, airs: 0, airSec: 0, bails: 0, unsticks: 0, slowSec: 0, impacts: 0, railImpacts: 0, farmResets: 0 };
   const stub = (): Instance => ({ root: new TransformNode("stub", scene), meshes: [], animationGroups: [], dispose() {} });
   const player = new PlayerController(scene, stub(), stub(), "skateboard", findSpawn(map), {
     // Side-on knocks that didn't bail (PlayerController.onImpact) — paths cutting through pieces.
@@ -188,6 +191,7 @@ async function main() {
       if (air > 0) {
         score += air;
         ai.notePoints(air);
+        farmGuard.gain();
         m.airs += 1;
         m.airSec += airtime;
         if (launchUid && skateable.has(launchUid)) used.add(launchUid);
@@ -206,13 +210,18 @@ async function main() {
       bailTimer = BAIL_RAGDOLL_SEC;
     },
     onGrindChange: (g) => {
-      if (g) grindStartT = simTime;
-      else if (grindStartT >= 0) {
+      if (g) {
+        grindStartT = simTime;
+        grindDistance = 0;
+      } else if (grindStartT >= 0) {
         const dur = simTime - grindStartT;
         const startedAt = grindStartT;
         grindStartT = -1;
-        score += grindBonus(dur);
-        ai.notePoints(grindBonus(dur));
+        const bonus = grindDistance >= 0 ? grindBonus(grindSeconds(grindDistance)) : 0;
+        grindDistance = -1;
+        score += bonus;
+        ai.notePoints(bonus);
+        if (bonus > 0) farmGuard.gain();
         m.grinds += 1;
         m.longestGrind = Math.max(m.longestGrind, dur);
         if (dur > 6) {
@@ -249,8 +258,22 @@ async function main() {
     ai.update(player, DT);
     player.update(DT);
     if (player.state === "grinding") {
-      score += DT * GRIND_POINTS_PER_SEC;
-      ai.notePoints(DT * GRIND_POINTS_PER_SEC);
+      const metres = player.speed * DT;
+      if (grindDistance >= 0) grindDistance += metres;
+      const points = grindTickPoints(metres);
+      score += points;
+      ai.notePoints(points);
+      farmGuard.gain();
+    }
+    // Same exploit guard as SkateScene.stopFarming: scoring in place for 3 s → respawn elsewhere.
+    const fp = player.position;
+    if (player.state !== "bailed" && farmGuard.update(DT, fp.x, fp.y, fp.z)) {
+      m.farmResets += 1;
+      grindDistance = -1;
+      const dest = findEmptyNearby(map, fp.clone()) ?? findSpawn(map);
+      player.respawn();
+      player.teleport(dest);
+      farmGuard.reset(dest.x, dest.y, dest.z);
     }
     if (bailTimer > 0) {
       bailTimer -= DT;

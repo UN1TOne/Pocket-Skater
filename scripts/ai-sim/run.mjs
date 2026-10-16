@@ -158,6 +158,7 @@ function summarize(runs) {
       bailsPerMin: perMin("bails"),
       unsticksPerMin: perMin("unsticks"),
       impactsPerMin: mean((r) => ((r.impacts ?? 0) / r.seconds) * 60),
+      farmResetsPerMin: mean((r) => ((r.farmResets ?? 0) / r.seconds) * 60),
       railImpactsPerMin: mean((r) => ((r.railImpacts ?? 0) / r.seconds) * 60),
       slowPct: mean((r) => (r.slowSec / r.seconds) * 100),
       spotsPct: mean((r) => (r.spotsUsed / Math.max(1, r.spotsTotal)) * 100),
@@ -190,6 +191,7 @@ function printTable(summary, baseline) {
     ["unsticksPerMin", "unstick/min", 2, -1],
     ["impactsPerMin", "knocks/min", 1, -1],
     ["railImpactsPerMin", "rail knk/min", 1, -1],
+    ["farmResetsPerMin", "farm rst/min", 2, -1],
     ["bailsPerMin", "bails/min", 2, -1],
   ];
   const w = 14;

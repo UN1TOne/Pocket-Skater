@@ -1,7 +1,24 @@
 /** Score rules, shared by SkateScene and the headless AI eval harness (scripts/ai-sim). */
 
-/** Points per second while grinding (accrued every frame). */
+/**
+ * Grinds score by distance ridden, expressed as "grind seconds" at GRIND_REF_SPEED — the
+ * thin-rail speed floor, i.e. roughly what riders actually ground at before rails ran at 2x
+ * entry speed (measured ~2.8-3.2 m/s). A time-based score would have halved every grind's
+ * ticks and quartered its quadratic bonus for the same rail; this keeps per-rail points level.
+ */
+export const GRIND_REF_SPEED = 3.2;
+/** Points per grind second (accrued every frame from the distance covered). */
 export const GRIND_POINTS_PER_SEC = 12;
+
+/** Grind seconds for `metres` ridden. */
+export function grindSeconds(metres: number): number {
+  return metres / GRIND_REF_SPEED;
+}
+
+/** Per-frame grind points for `metres` covered this frame. */
+export function grindTickPoints(metres: number): number {
+  return GRIND_POINTS_PER_SEC * grindSeconds(metres);
+}
 export const BAIL_PENALTY = 50;
 
 /** Landing bonus for airtime; short hops don't count. */
@@ -10,8 +27,8 @@ export function airScore(airtime: number): number {
 }
 
 /**
- * End-of-grind bonus. Quadratic so longer grinds feel dramatically more rewarding:
- * 1s = +10, 2s = +40, 3s = +90, 5s = +250.
+ * End-of-grind bonus from grind seconds (see grindSeconds). Quadratic so longer grinds feel
+ * dramatically more rewarding: 1s = +10, 2s = +40, 3s = +90, 5s = +250.
  */
 export function grindBonus(duration: number): number {
   return duration > 0.3 ? Math.round(10 * duration * duration) : 0;

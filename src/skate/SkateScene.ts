@@ -12,7 +12,7 @@ import { gameInput } from "@/engine/input";
 import { Sfx } from "@/engine/audio/Sfx";
 import { CATALOG_BY_ID } from "@/data/catalog";
 import type { GameHud } from "@/store/useGameStore";
-import { BAIL_PENALTY, GRIND_POINTS_PER_SEC, ScoreFarmGuard, airScore, grindBonus, grindLabel } from "./scoring";
+import { BAIL_PENALTY, ScoreFarmGuard, airScore, grindBonus, grindLabel, grindSeconds, grindTickPoints } from "./scoring";
 import { findEmptyNearby, findSpawn, RespawnPlanner, type RawPiece } from "./parkLayout";
 import { buildSpots } from "./spots";
 import type { CharacterId, MapData, PlayMode, RideId } from "@/types/game";
@@ -46,7 +46,8 @@ export class SkateScene {
   private disposed = false;
   private camTarget = new Vector3();
   private respawns = new RespawnPlanner();
-  private grindStart = 0;
+  /** Metres ridden in the current grind; -1 when not grinding. */
+  private grindDistance = -1;
   private farmGuard = new ScoreFarmGuard();
 
   constructor(private opts: SkateSceneOptions) {
@@ -145,10 +146,10 @@ export class SkateScene {
         else this.sfx.grindStop();
         this.opts.onHud({ grinding: g });
         if (g) {
-          this.grindStart = performance.now();
-        } else if (this.grindStart > 0) {
-          const dur = (performance.now() - this.grindStart) / 1000;
-          this.grindStart = 0;
+          this.grindDistance = 0;
+        } else if (this.grindDistance >= 0) {
+          const dur = grindSeconds(this.grindDistance);
+          this.grindDistance = -1;
           const bonus = grindBonus(dur);
           if (bonus > 0) {
             this.score += bonus;
@@ -223,7 +224,7 @@ export class SkateScene {
       this.sfx.grindStop();
       this.opts.onHud({ grinding: false });
     }
-    this.grindStart = 0;
+    this.grindDistance = -1;
     const dest = findEmptyNearby(this.opts.map, pos) ?? findSpawn(this.opts.map);
     this.player.respawn();
     this.player.teleport(dest);
@@ -261,9 +262,12 @@ export class SkateScene {
 
     this.player.update(dt);
     if (this.player.state === "grinding") {
-      this.score += dt * GRIND_POINTS_PER_SEC;
+      const metres = this.player.speed * dt;
+      if (this.grindDistance >= 0) this.grindDistance += metres;
+      const points = grindTickPoints(metres);
+      this.score += points;
       this.farmGuard.gain();
-      this.ai.notePoints(dt * GRIND_POINTS_PER_SEC);
+      this.ai.notePoints(points);
       this.sfx.setGrindSpeed(this.player.speed);
     }
 
