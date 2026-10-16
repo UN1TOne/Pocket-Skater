@@ -6,3 +6,4 @@ dist
 vite.log
 last-probe.json
 last-probe-v2.json
+scripts/preset-*.png

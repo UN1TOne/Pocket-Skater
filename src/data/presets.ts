@@ -77,6 +77,69 @@ const miniBowl: PlacedItem[] = [
   p("pallet", 1, 11), p("pallet", 12, 7),
 ];
 
+/**
+ * Street Studio — the demo setup from the Kenney reference image: a hero quarter-pipe
+ * wall running along the north edge, a long low rail on the west side, a 2x2
+ * obstacle/ledge cluster in the middle, a curve-rail → high-rail → slope on the east,
+ * and props (vehicle, pallets, benches, fences) framing the center. Designed as a
+ * "showcase" park with every piece category represented.
+ */
+const streetStudio: PlacedItem[] = [
+  // North wall: big quarter-pipe row, bowl corners cap the ends.
+  p("bowl-corner-outer", 5, 0, 0),
+  p("half-pipe", 6, 0, 0), p("half-pipe", 7, 0, 0),
+  p("half-pipe", 8, 0, 0), p("half-pipe", 9, 0, 0),
+  p("bowl-corner-outer", 10, 0, 3),
+
+  // Northwest: wood platform with a step up (the "stage" where a skater stands in the ref).
+  p("structure-wood-platform", 1, 1),
+  p("structure-wood", 2, 1),
+  p("steps", 1, 3, 0),
+
+  // Bleacher row below the quarter-pipes.
+  p("benches", 4, 2, 0), p("benches", 7, 2, 0),
+
+  // Long low rail chain running down the west side.
+  p("rail-low-end", 4, 4, 0),
+  p("rail-low", 4, 5, 0), p("rail-low", 4, 6, 0), p("rail-low", 4, 7, 0),
+  p("rail-low-end", 4, 8, 2),
+
+  // Center ledge + grind-box cluster (the orange/beige boxes in the ref).
+  p("obstacle-box", 6, 6),       p("obstacle-box-grind", 7, 6),
+  p("obstacle-middle-rail", 6, 7, 1), p("obstacle-middle", 7, 7, 1),
+  p("obstacle-end", 8, 6, 3),
+
+  // East side: ramp with rail → curved rail → high rail → slope rail down.
+  p("ramp-rail", 11, 3, 2),
+  p("rail-curve", 10, 5, 0),
+  p("rail-high", 11, 6, 1),
+  p("rail-slope-smooth", 11, 8, 0),
+
+  // Southeast: steps-with-rail, kicker.
+  p("steps-rail", 11, 10, 2),
+  p("ramp", 10, 12, 0), p("ramp", 11, 12, 0),
+
+  // Southwest: another kicker + a flat-rail curve for exits.
+  p("ramp", 2, 12, 2),
+  p("rail-high-curve", 3, 11, 0),
+
+  // The hero vehicle in the center-south, with props scattered around it.
+  p("vehicle", 6, 11, 0),         // 2x1 — occupies (6,11) and (7,11)
+  p("pallet", 5, 12),
+  p("plank", 8, 11, 1),
+  p("pallet", 9, 12),
+
+  // Framing props: benches, fences at the edges.
+  p("bench", 0, 6, 1), p("bench", 0, 9, 1),
+  p("bench", 13, 6, 3), p("bench", 13, 9, 3),
+  p("fence", 13, 1, 1), p("fence", 13, 2, 1),
+  p("fence", 0, 12, 3), p("fence", 0, 13, 3),
+
+  // Southwest bowl corner for a tiny roll-off at the edge.
+  p("bowl-corner-outer", 0, 11, 2),
+  p("bowl-side-low", 1, 11, 1),
+];
+
 export const PRESET_MAPS: MapData[] = [
   {
     id: "preset-sunset-plaza",
@@ -92,6 +155,14 @@ export const PRESET_MAPS: MapData[] = [
     blurb: "A deep ring bowl, a kiddie bowl and a wooden bridge.",
     size: 14,
     items: miniBowl,
+    preset: true,
+  },
+  {
+    id: "preset-street-studio",
+    name: "Street Studio",
+    blurb: "Big quarter-pipe wall, long rail, grind-box cluster and a parked taxi.",
+    size: 14,
+    items: streetStudio,
     preset: true,
   },
 ];
