@@ -88,15 +88,19 @@ export const CATEGORIES: Array<{ id: ItemCategory; label: string; emoji: string 
   { id: "exteriors", label: "Nature", emoji: "🌲" },
 ];
 
-export const previewUrl = (id: string) => `/assets/images/preview/${id}.png`;
+// BASE_URL ends with "/"; "/" in dev, "/Pocket-Skater/" in prod. Prefixing all
+// asset URLs with it keeps the game working at the GitHub Pages subpath without
+// touching the dev server.
+const BASE = import.meta.env.BASE_URL;
+export const previewUrl = (id: string) => `${BASE}assets/images/preview/${id}.png`;
 const EXTERIORS_DIR = "exteriors";
 export const modelUrl = (id: string): string => {
   const item = CATALOG_BY_ID[id];
   if (item?.category === "exteriors") {
     // Strip the `exterior-` prefix so the file lookup matches the GLB name on disk.
     const file = id.startsWith("exterior-") ? id.slice("exterior-".length) : id;
-    return `/assets/models/${EXTERIORS_DIR}/${file}.glb`;
+    return `${BASE}assets/models/${EXTERIORS_DIR}/${file}.glb`;
   }
-  return `/assets/models/${id}.glb`;
+  return `${BASE}assets/models/${id}.glb`;
 };
-export const bgUrl = (name: "landing" | "sky" | "dusk") => `/assets/images/bg/${name}.png`;
+export const bgUrl = (name: "landing" | "sky" | "dusk") => `${BASE}assets/images/bg/${name}.png`;
